@@ -32,7 +32,7 @@ FullCalendar.locale("fr", {
     month: "Mois",
     week: "Semaine",
     day: "Jour",
-    list: "Mon planning"
+    list: "\u2630"
   },
   allDayHtml: "Toute la<br/>journée",
   eventLimitText: "en plus",
