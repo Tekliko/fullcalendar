@@ -1,5 +1,5 @@
 /*!
- * FullCalendar v0.0.0
+ * FullCalendar v0.0.1
  * Docs & License: https://fullcalendar.io/
  * (c) 2018 Adam Shaw
  */
@@ -183,7 +183,7 @@ hr.fc-divider {
 .fc-bg,
 .fc-bgevent-skeleton,
 .fc-highlight-skeleton,
-.fc-helper-skeleton {
+.fc-mirror-skeleton {
   /* these element should always cling to top-left/right corners */
   position: absolute;
   top: 0;
@@ -282,7 +282,7 @@ a[data-goto]:hover {
   z-index: 3; }
 
 /*
-row content (which contains day/week numbers and events) as well as "helper" (which contains
+row content (which contains day/week numbers and events) as well as "mirror" (which contains
 temporary rendered events).
 */
 .fc-row .fc-content-skeleton {
@@ -291,12 +291,12 @@ temporary rendered events).
   padding-bottom: 2px;
   /* matches the space above the events */ }
 
-.fc-row .fc-helper-skeleton {
+.fc-row .fc-mirror-skeleton {
   z-index: 5; }
 
 .fc .fc-row .fc-content-skeleton table,
 .fc .fc-row .fc-content-skeleton td,
-.fc .fc-row .fc-helper-skeleton td {
+.fc .fc-row .fc-mirror-skeleton td {
   /* see-through to the background below */
   /* extra precedence to prevent theme-provided backgrounds */
   background: none;
@@ -304,12 +304,12 @@ temporary rendered events).
   border-color: transparent; }
 
 .fc-row .fc-content-skeleton td,
-.fc-row .fc-helper-skeleton td {
+.fc-row .fc-mirror-skeleton td {
   /* don't put a border between events and/or the day number */
   border-bottom: 0; }
 
 .fc-row .fc-content-skeleton tbody td,
-.fc-row .fc-helper-skeleton tbody td {
+.fc-row .fc-mirror-skeleton tbody td {
   /* don't put a border between event cells */
   border-top: 0; }
 
@@ -406,8 +406,13 @@ temporary rendered events).
   /* overcomes inline z-index */
   box-shadow: 0 2px 5px rgba(0, 0, 0, 0.2); }
 
-.fc-event.fc-selected.fc-dragging {
+/* Event Dragging
+--------------------------------------------------------------------------------------------------*/
+.fc-event.fc-dragging.fc-selected {
   box-shadow: 0 2px 7px rgba(0, 0, 0, 0.3); }
+
+.fc-event.fc-dragging:not(.fc-selected) {
+  opacity: .75; }
 
 /* Horizontal Events
 --------------------------------------------------------------------------------------------------*/
@@ -503,6 +508,10 @@ be a descendant of the grid when it is being dragged.
 tr:first-child > td > .fc-day-grid-event {
   margin-top: 2px;
   /* a little bit more space before the first event */ }
+
+.fc-mirror-skeleton tr:first-child > td > .fc-day-grid-event {
+  margin-top: 0;
+  /* except for mirror skeleton */ }
 
 .fc-day-grid-event.fc-selected:after {
   content: "";
@@ -1010,7 +1019,7 @@ NOTE: use percentage font sizes or else old IE chokes
 .fc-time-grid .fc-now-indicator-line {
   z-index: 5; }
 
-.fc-time-grid .fc-helper-container {
+.fc-time-grid .fc-mirror-container {
   /* also is fc-event-container */
   position: relative;
   z-index: 6; }

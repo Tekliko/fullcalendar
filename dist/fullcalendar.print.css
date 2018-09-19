@@ -1,10 +1,10 @@
 /*!
- * FullCalendar v0.0.0
+ * FullCalendar v0.0.1
  * Docs & License: https://fullcalendar.io/
  * (c) 2018 Adam Shaw
  */
 /*!
- * FullCalendar v0.0.0 Print Stylesheet
+ * FullCalendar v0.0.1 Print Stylesheet
  * Docs & License: https://fullcalendar.io/
  * (c) 2018 Adam Shaw
  */
@@ -42,11 +42,11 @@
 .fc-bg,
 .fc-bgevent-skeleton,
 .fc-highlight-skeleton,
-.fc-helper-skeleton,
+.fc-mirror-skeleton,
 .fc-bgevent-container,
 .fc-business-container,
 .fc-highlight-container,
-.fc-helper-container {
+.fc-mirror-container {
   display: none; }
 
 /* don't force a min-height on rows (for DayGrid) */
