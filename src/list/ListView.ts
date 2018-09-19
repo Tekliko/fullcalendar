@@ -1,10 +1,13 @@
-import * as $ from 'jquery'
-import { htmlEscape, subtractInnerElHeight } from '../util'
-import UnzonedRange from '../models/UnzonedRange'
+import { htmlToElement, createElement } from '../util/dom-manip'
+import { htmlEscape } from '../util/html'
+import { subtractInnerElHeight } from '../util/misc'
 import View from '../View'
-import Scroller from '../common/Scroller'
+import ScrollComponent from '../common/ScrollComponent'
 import ListEventRenderer from './ListEventRenderer'
-import ListEventPointing from './ListEventPointing'
+import { DateMarker, addDays, startOfDay } from '../datelib/marker'
+import { createFormatter } from '../datelib/formatting'
+import { DateRange, intersectRanges } from '../datelib/date-range'
+import { DateProfile } from '../DateProfileGenerator'
 
 /*
 Responsible for the scroller, and forwarding event-related actions into the "grid".
@@ -13,48 +16,49 @@ export default class ListView extends View {
 
   // initialized after the class
   eventRendererClass: any
-  eventPointingClass: any
 
-  segSelector: any = '.fc-list-item' // which elements accept event actions
+  isInteractable = true
+  slicingType: 'all-day' = 'all-day' // stupid TypeScript
+  fgSegSelector: any = '.fc-list-item' // which elements accept event actions
 
-  scroller: any
-  contentEl: any
+  scroller: ScrollComponent
+  contentEl: HTMLElement
 
-  dayDates: any // localized ambig-time moment array
-  dayRanges: any // UnzonedRange[], of start-end of each day
+  dayDates: DateMarker[]
+  dayRanges: DateRange[] // start/end of each day
 
 
   constructor(calendar, viewSpec) {
     super(calendar, viewSpec)
 
-    this.scroller = new Scroller({
-      overflowX: 'hidden',
-      overflowY: 'auto'
-    })
+    this.scroller = new ScrollComponent(
+      'hidden', // overflow x
+      'auto' // overflow y
+    )
   }
 
 
   renderSkeleton() {
-    this.el.addClass(
-      'fc-list-view ' +
-      this.calendar.theme.getClass('listView')
-    )
+    this.el.classList.add('fc-list-view')
 
-    this.scroller.render()
-    this.scroller.el.appendTo(this.el)
+    let themeClass = this.calendar.theme.getClass('listView')
+    if (themeClass) {
+      this.el.classList.add(themeClass)
+    }
 
-    this.contentEl = this.scroller.scrollEl // shortcut
+    this.scroller.applyOverflow()
+    this.el.appendChild(this.scroller.el)
+
+    this.contentEl = this.scroller.el // shortcut
   }
 
 
   unrenderSkeleton() {
-    this.scroller.destroy() // will remove the Grid too
+    this.scroller.removeElement() // will remove the Grid too
   }
 
 
-  updateSize(totalHeight, isAuto, isResize) {
-    super.updateSize(totalHeight, isAuto, isResize)
-
+  updateBaseSize(totalHeight, isAuto) {
     this.scroller.clear() // sets height to 'auto' and clears overflow
 
     if (!isAuto) {
@@ -69,23 +73,22 @@ export default class ListView extends View {
   }
 
 
-  renderDates(dateProfile) {
-    let calendar = this.calendar
-    let dayStart = calendar.msToUtcMoment(dateProfile.renderUnzonedRange.startMs, true)
-    let viewEnd = calendar.msToUtcMoment(dateProfile.renderUnzonedRange.endMs, true)
-    let dayDates = []
-    let dayRanges = []
+  renderDates(dateProfile: DateProfile) {
+    let dayStart = startOfDay(dateProfile.renderRange.start)
+    let viewEnd = dateProfile.renderRange.end
+    let dayDates: DateMarker[] = []
+    let dayRanges: DateRange[] = []
 
     while (dayStart < viewEnd) {
 
-      dayDates.push(dayStart.clone())
+      dayDates.push(dayStart)
 
-      dayRanges.push(new UnzonedRange(
-        dayStart,
-        dayStart.clone().add(1, 'day')
-      ))
+      dayRanges.push({
+        start: dayStart,
+        end: addDays(dayStart, 1)
+      })
 
-      dayStart.add(1, 'day')
+      dayStart = addDays(dayStart, 1)
     }
 
     this.dayDates = dayDates
@@ -96,7 +99,8 @@ export default class ListView extends View {
 
 
   // slices by day
-  componentFootprintToSegs(footprint) {
+  rangeToSegs(range: DateRange, isAllDay: boolean) {
+    let dateEnv = this.getDateEnv()
     let dayRanges = this.dayRanges
     let dayIndex
     let segRange
@@ -104,27 +108,32 @@ export default class ListView extends View {
     let segs = []
 
     for (dayIndex = 0; dayIndex < dayRanges.length; dayIndex++) {
-      segRange = footprint.unzonedRange.intersect(dayRanges[dayIndex])
+      segRange = intersectRanges(range, dayRanges[dayIndex])
 
       if (segRange) {
         seg = {
-          startMs: segRange.startMs,
-          endMs: segRange.endMs,
-          isStart: segRange.isStart,
-          isEnd: segRange.isEnd,
+          component: this,
+          start: segRange.start,
+          end: segRange.end,
+          isStart: segRange.start.valueOf() === range.start.valueOf(),
+          isEnd: segRange.end.valueOf() === range.end.valueOf(),
           dayIndex: dayIndex
         }
 
         segs.push(seg)
 
-        // detect when footprint won't go fully into the next day,
+        // detect when range won't go fully into the next day,
         // and mutate the latest seg to the be the end.
         if (
-          !seg.isEnd && !footprint.isAllDay &&
+          !seg.isEnd && !isAllDay &&
           dayIndex + 1 < dayRanges.length &&
-          footprint.unzonedRange.endMs < dayRanges[dayIndex + 1].startMs + this.nextDayThreshold
+          range.end <
+            dateEnv.add(
+              dayRanges[dayIndex + 1].start,
+              this.nextDayThreshold
+            )
         ) {
-          seg.endMs = footprint.unzonedRange.endMs
+          seg.end = range.end
           seg.isEnd = true
           break
         }
@@ -136,7 +145,7 @@ export default class ListView extends View {
 
 
   renderEmptyMessage() {
-    this.contentEl.html(
+    this.contentEl.innerHTML =
       '<div class="fc-list-empty-wrap2">' + // TODO: try less wraps
       '<div class="fc-list-empty-wrap1">' +
       '<div class="fc-list-empty">' +
@@ -144,7 +153,6 @@ export default class ListView extends View {
       '</div>' +
       '</div>' +
       '</div>'
-    )
   }
 
 
@@ -154,8 +162,8 @@ export default class ListView extends View {
     let dayIndex
     let daySegs
     let i
-    let tableEl = $('<table class="fc-list-table ' + this.calendar.theme.getClass('tableList') + '"><tbody/></table>')
-    let tbodyEl = tableEl.find('tbody')
+    let tableEl = htmlToElement('<table class="fc-list-table ' + this.calendar.theme.getClass('tableList') + '"><tbody></tbody></table>')
+    let tbodyEl = tableEl.querySelector('tbody')
 
     for (dayIndex = 0; dayIndex < segsByDay.length; dayIndex++) {
       daySegs = segsByDay[dayIndex]
@@ -163,17 +171,23 @@ export default class ListView extends View {
       if (daySegs) { // sparse array, so might be undefined
 
         // append a day header
-        tbodyEl.append(this.dayHeaderHtml(this.dayDates[dayIndex]))
+        tbodyEl.appendChild(this.buildDayHeaderRow(this.dayDates[dayIndex]))
 
-        this.eventRenderer.sortEventSegs(daySegs)
+        daySegs = this.eventRenderer.sortEventSegs(
+          daySegs,
+          [
+            { field: 'start', order: 1 } // always put earlier events first, regardless of eventOrder
+          ].concat(this.view.eventOrderSpecs)
+        )
 
         for (i = 0; i < daySegs.length; i++) {
-          tbodyEl.append(daySegs[i].el) // append event row
+          tbodyEl.appendChild(daySegs[i].el) // append event row
         }
       }
     }
 
-    this.contentEl.empty().append(tableEl)
+    this.contentEl.innerHTML = ''
+    this.contentEl.appendChild(tableEl)
   }
 
 
@@ -194,34 +208,35 @@ export default class ListView extends View {
 
 
   // generates the HTML for the day headers that live amongst the event rows
-  dayHeaderHtml(dayDate) {
-    let mainFormat = this.opt('listDayFormat')
-    let altFormat = this.opt('listDayAltFormat')
+  buildDayHeaderRow(dayDate) {
+    let dateEnv = this.getDateEnv()
+    let mainFormat = createFormatter(this.opt('listDayFormat')) // TODO: cache
+    let altFormat = createFormatter(this.opt('listDayAltFormat')) // TODO: cache
 
-    return '<tr class="fc-list-heading" data-date="' + dayDate.format('YYYY-MM-DD') + '">' +
-      '<td class="' + (
-        this.calendar.theme.getClass('tableListHeading') ||
-        this.calendar.theme.getClass('widgetHeader')
-      ) + '" colspan="3">' +
-        (mainFormat ?
-          this.buildGotoAnchorHtml(
-            dayDate,
-            { 'class': 'fc-list-heading-main' },
-            htmlEscape(dayDate.format(mainFormat)) // inner HTML
-          ) :
-          '') +
-        (altFormat ?
-          this.buildGotoAnchorHtml(
-            dayDate,
-            { 'class': 'fc-list-heading-alt' },
-            htmlEscape(dayDate.format(altFormat)) // inner HTML
-          ) :
-          '') +
-      '</td>' +
-    '</tr>'
+    return createElement('tr', {
+      className: 'fc-list-heading',
+      'data-date': dateEnv.formatIso(dayDate, { omitTime: true })
+    }, '<td class="' + (
+      this.calendar.theme.getClass('tableListHeading') ||
+      this.calendar.theme.getClass('widgetHeader')
+    ) + '" colspan="3">' +
+      (mainFormat ?
+        this.buildGotoAnchorHtml(
+          dayDate,
+          { 'class': 'fc-list-heading-main' },
+          htmlEscape(dateEnv.format(dayDate, mainFormat)) // inner HTML
+        ) :
+        '') +
+      (altFormat ?
+        this.buildGotoAnchorHtml(
+          dayDate,
+          { 'class': 'fc-list-heading-alt' },
+          htmlEscape(dateEnv.format(dayDate, altFormat)) // inner HTML
+        ) :
+        '') +
+    '</td>') as HTMLTableRowElement
   }
 
 }
 
 ListView.prototype.eventRendererClass = ListEventRenderer
-ListView.prototype.eventPointingClass = ListEventPointing

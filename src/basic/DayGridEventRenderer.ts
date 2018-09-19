@@ -1,6 +1,8 @@
-import * as $ from 'jquery'
-import { htmlEscape, cssToStr } from '../util'
+import { htmlEscape, cssToStr } from '../util/html'
+import { createElement, removeElement } from '../util/dom-manip'
 import EventRenderer from '../component/renderers/EventRenderer'
+import DayGrid from './DayGrid'
+import { Seg } from '../component/DateComponent'
 
 
 /* Event-rendering methods for the DayGrid class
@@ -8,7 +10,7 @@ import EventRenderer from '../component/renderers/EventRenderer'
 
 export default class DayGridEventRenderer extends EventRenderer {
 
-  dayGrid: any
+  dayGrid: DayGrid
   rowStructs: any // an array of objects, each holding information about a row's foreground event-rendering
 
 
@@ -18,23 +20,23 @@ export default class DayGridEventRenderer extends EventRenderer {
   }
 
 
-  renderBgRanges(eventRanges) {
+  renderBgSegs(segs: Seg[]) {
     // don't render timed background events
-    eventRanges = $.grep(eventRanges, function(eventRange: any) {
-      return eventRange.eventDef.isAllDay()
+    segs = segs.filter(function(seg) {
+      return seg.eventRange.def.isAllDay
     })
 
-    super.renderBgRanges(eventRanges)
+    return super.renderBgSegs(segs)
   }
 
 
   // Renders the given foreground event segments onto the grid
-  renderFgSegs(segs) {
+  renderFgSegs(segs: Seg[]) {
     let rowStructs = this.rowStructs = this.renderSegRows(segs)
 
     // append to each row's content skeleton
-    this.dayGrid.rowEls.each(function(i, rowNode) {
-      $(rowNode).find('.fc-content-skeleton > table').append(
+    this.dayGrid.rowEls.forEach(function(rowNode, i) {
+      rowNode.querySelector('.fc-content-skeleton > table').appendChild(
         rowStructs[i].tbodyEl
       )
     })
@@ -47,7 +49,7 @@ export default class DayGridEventRenderer extends EventRenderer {
     let rowStruct
 
     while ((rowStruct = rowStructs.pop())) {
-      rowStruct.tbodyEl.remove()
+      removeElement(rowStruct.tbodyEl)
     }
 
     this.rowStructs = null
@@ -57,7 +59,7 @@ export default class DayGridEventRenderer extends EventRenderer {
   // Uses the given events array to generate <tbody> elements that should be appended to each row's content skeleton.
   // Returns an array of rowStruct objects (see the bottom of `renderSegRow`).
   // PRECONDITION: each segment shoud already have a rendered and assigned `.el`
-  renderSegRows(segs) {
+  renderSegRows(segs: Seg[]) {
     let rowStructs = []
     let segRows
     let row
@@ -82,17 +84,17 @@ export default class DayGridEventRenderer extends EventRenderer {
     let colCnt = this.dayGrid.colCnt
     let segLevels = this.buildSegLevels(rowSegs) // group into sub-arrays of levels
     let levelCnt = Math.max(1, segLevels.length) // ensure at least one level
-    let tbody = $('<tbody/>')
+    let tbody = document.createElement('tbody')
     let segMatrix = [] // lookup for which segments are rendered into which level+col cells
     let cellMatrix = [] // lookup for all <td> elements of the level+col matrix
     let loneCellMatrix = [] // lookup for <td> elements that only take up a single column
     let i
     let levelSegs
     let col
-    let tr
+    let tr: HTMLTableRowElement
     let j
     let seg
-    let td
+    let td: HTMLTableCellElement
 
     // populates empty cells from the current column (`col`) to `endCol`
     function emptyCellsUntil(endCol) {
@@ -100,13 +102,10 @@ export default class DayGridEventRenderer extends EventRenderer {
         // try to grab a cell from the level above and extend its rowspan. otherwise, create a fresh cell
         td = (loneCellMatrix[i - 1] || [])[col]
         if (td) {
-          td.attr(
-            'rowspan',
-            parseInt(td.attr('rowspan') || 1, 10) + 1
-          )
+          td.rowSpan = (td.rowSpan || 1) + 1
         } else {
-          td = $('<td/>')
-          tr.append(td)
+          td = document.createElement('td')
+          tr.appendChild(td)
         }
         cellMatrix[i][col] = td
         loneCellMatrix[i][col] = td
@@ -117,7 +116,7 @@ export default class DayGridEventRenderer extends EventRenderer {
     for (i = 0; i < levelCnt; i++) { // iterate through all levels
       levelSegs = segLevels[i]
       col = 0
-      tr = $('<tr/>')
+      tr = document.createElement('tr')
 
       segMatrix.push([])
       cellMatrix.push([])
@@ -132,9 +131,9 @@ export default class DayGridEventRenderer extends EventRenderer {
           emptyCellsUntil(seg.leftCol)
 
           // create a container that occupies or more columns. append the event element.
-          td = $('<td class="fc-event-container"/>').append(seg.el)
+          td = createElement('td', { className: 'fc-event-container' }, seg.el) as HTMLTableCellElement
           if (seg.leftCol !== seg.rightCol) {
-            td.attr('colspan', seg.rightCol - seg.leftCol + 1)
+            td.colSpan = seg.rightCol - seg.leftCol + 1
           } else { // a single-column segment
             loneCellMatrix[i][col] = td
           }
@@ -145,13 +144,13 @@ export default class DayGridEventRenderer extends EventRenderer {
             col++
           }
 
-          tr.append(td)
+          tr.appendChild(td)
         }
       }
 
       emptyCellsUntil(colCnt) // finish off the row
       this.dayGrid.bookendCells(tr)
-      tbody.append(tr)
+      tbody.appendChild(tr)
     }
 
     return { // a "rowStruct"
@@ -167,7 +166,7 @@ export default class DayGridEventRenderer extends EventRenderer {
 
   // Stacks a flat array of segments, which are all assumed to be in the same row, into subarrays of vertical levels.
   // NOTE: modifies segs
-  buildSegLevels(segs) {
+  buildSegLevels(segs: Seg[]) {
     let levels = []
     let i
     let seg
@@ -175,7 +174,7 @@ export default class DayGridEventRenderer extends EventRenderer {
 
     // Give preference to elements with certain criteria, so they have
     // a chance to be closer to the top.
-    this.sortEventSegs(segs)
+    segs = this.sortEventSegs(segs)
 
     for (i = 0; i < segs.length; i++) {
       seg = segs[i]
@@ -203,7 +202,7 @@ export default class DayGridEventRenderer extends EventRenderer {
 
 
   // Given a flat array of segments, return an array of sub-arrays, grouped by each segment's row
-  groupSegRows(segs) {
+  groupSegRows(segs: Seg[]) {
     let segRows = []
     let i
 
@@ -219,9 +218,14 @@ export default class DayGridEventRenderer extends EventRenderer {
   }
 
 
-  // Computes a default event time formatting string if `timeFormat` is not explicitly defined
+  // Computes a default event time formatting string if `eventTimeFormat` is not explicitly defined
   computeEventTimeFormat() {
-    return this.opt('extraSmallTimeFormat') // like "6p" or "6:30p"
+    return {
+      hour: 'numeric',
+      minute: '2-digit',
+      omitZeroTime: true,
+      meridiem: 'narrow'
+    }
   }
 
 
@@ -232,17 +236,16 @@ export default class DayGridEventRenderer extends EventRenderer {
 
 
   // Builds the HTML to be used for the default element for an individual segment
-  fgSegHtml(seg, disableResizing) {
-    let view = this.view
-    let eventDef = seg.footprint.eventDef
-    let isAllDay = seg.footprint.componentFootprint.isAllDay
-    let isDraggable = view.isEventDefDraggable(eventDef)
-    let isResizableFromStart = !disableResizing && isAllDay &&
-      seg.isStart && view.isEventDefResizableFromStart(eventDef)
-    let isResizableFromEnd = !disableResizing && isAllDay &&
-      seg.isEnd && view.isEventDefResizableFromEnd(eventDef)
+  fgSegHtml(seg: Seg) {
+    let eventRange = seg.eventRange
+    let eventDef = eventRange.def
+    let eventUi = eventRange.ui
+    let isAllDay = eventDef.isAllDay
+    let isDraggable = eventUi.startEditable
+    let isResizableFromStart = isAllDay && seg.isStart && eventUi.durationEditable && this.opt('eventResizableFromStart')
+    let isResizableFromEnd = isAllDay && seg.isEnd && eventUi.durationEditable
     let classes = this.getSegClasses(seg, isDraggable, isResizableFromStart || isResizableFromEnd)
-    let skinCss = cssToStr(this.getSkinCss(eventDef))
+    let skinCss = cssToStr(this.getSkinCss(eventUi))
     let timeHtml = ''
     let timeText
     let titleHtml
@@ -251,7 +254,7 @@ export default class DayGridEventRenderer extends EventRenderer {
 
     // Only display a timed events time if it is the starting segment
     if (seg.isStart) {
-      timeText = this.getTimeText(seg.footprint)
+      timeText = this.getTimeText(eventRange)
       if (timeText) {
         timeHtml = '<span class="fc-time">' + htmlEscape(timeText) + '</span>'
       }
@@ -273,17 +276,17 @@ export default class DayGridEventRenderer extends EventRenderer {
           ) +
       '>' +
         '<div class="fc-content">' +
-          (this.dayGrid.isRTL ?
+          (this.component.opt('isRtl') ?
             titleHtml + ' ' + timeHtml : // put a natural space in between
             timeHtml + ' ' + titleHtml   //
             ) +
         '</div>' +
         (isResizableFromStart ?
-          '<div class="fc-resizer fc-start-resizer" />' :
+          '<div class="fc-resizer fc-start-resizer"></div>' :
           ''
           ) +
         (isResizableFromEnd ?
-          '<div class="fc-resizer fc-end-resizer" />' :
+          '<div class="fc-resizer fc-end-resizer"></div>' :
           ''
           ) +
       '</a>'
@@ -293,7 +296,7 @@ export default class DayGridEventRenderer extends EventRenderer {
 
 
 // Computes whether two segments' columns collide. They are assumed to be in the same row.
-function isDaySegCollision(seg, otherSegs) {
+function isDaySegCollision(seg: Seg, otherSegs: Seg) {
   let i
   let otherSeg
 
@@ -313,6 +316,6 @@ function isDaySegCollision(seg, otherSegs) {
 
 
 // A cmp function for determining the leftmost event
-function compareDaySegCols(a, b) {
+function compareDaySegCols(a: Seg, b: Seg) {
   return a.leftCol - b.leftCol
 }

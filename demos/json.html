@@ -4,34 +4,36 @@
 <meta charset='utf-8' />
 <link href='../dist/fullcalendar.css' rel='stylesheet' />
 <link href='../dist/fullcalendar.print.css' rel='stylesheet' media='print' />
-<script src='../node_modules/moment/moment.js'></script>
-<script src='../node_modules/jquery/dist/jquery.js'></script>
+<script src='../node_modules/superagent/superagent.js'></script>
 <script src='../dist/fullcalendar.js'></script>
 <script>
 
-  $(document).ready(function() {
+  document.addEventListener('DOMContentLoaded', function() {
+    var calendarEl = document.getElementById('calendar');
 
-    $('#calendar').fullCalendar({
+    var calendar = new FullCalendar.Calendar(calendarEl, {
       header: {
         left: 'prev,next today',
         center: 'title',
         right: 'month,agendaWeek,agendaDay,listWeek'
       },
-      defaultDate: '2018-03-12',
+      defaultDate: '2018-04-12',
       editable: true,
       navLinks: true, // can click day/week names to navigate views
       eventLimit: true, // allow "more" link when too many events
       events: {
         url: 'php/get-events.php',
-        error: function() {
-          $('#script-warning').show();
+        failure: function() {
+          document.getElementById('script-warning').style.display = 'block'
         }
       },
       loading: function(bool) {
-        $('#loading').toggle(bool);
+        document.getElementById('loading').style.display =
+          bool ? 'block' : 'none';
       }
     });
 
+    calendar.render();
   });
 
 </script>

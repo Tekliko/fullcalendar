@@ -1,56 +1,114 @@
-import * as $ from 'jquery'
-import * as moment from 'moment'
-import { attrsToStr, htmlEscape, dayIDs } from '../util'
-import momentExt from '../moment-ext'
-import { formatRange } from '../date-formatting'
-import Component from './Component'
-import { eventRangeToEventFootprint } from '../models/event/util'
-import EventFootprint from '../models/event/EventFootprint'
+import { attrsToStr, htmlEscape } from '../util/html'
+import { elementClosest } from '../util/dom-manip'
+import { default as Component, RenderForceFlags } from './Component'
+import Calendar from '../Calendar'
+import View from '../View'
+import { DateProfile } from '../DateProfileGenerator'
+import { DateMarker, DAY_IDS, addDays, startOfDay, diffWholeDays } from '../datelib/marker'
+import { Duration, createDuration } from '../datelib/duration'
+import { DateSpan } from '../structs/date-span'
+import { EventRenderRange, sliceEventStore, computeEventDefUi, EventUiHash, computeEventDefUis } from '../component/event-rendering'
+import { EventStore, expandRecurring } from '../structs/event-store'
+import { DateEnv } from '../datelib/env'
+import Theme from '../theme/Theme'
+import { EventInteractionUiState } from '../interactions/event-interaction-state'
+import { assignTo } from '../util/object'
+import browserContext from '../common/browser-context'
+import { Hit } from '../interactions/HitDragging'
+import { DateRange, rangeContainsMarker, rangeContainsRange } from '../datelib/date-range'
+import EventApi from '../api/EventApi'
+import { createEventInstance, parseEventDef } from '../structs/event'
+import EmitterMixin from '../common/EmitterMixin'
+import { isEventsValid, isSelectionValid } from '../validation'
+
+
+export interface DateComponentRenderState {
+  dateProfile: DateProfile | null
+  businessHours: EventStore
+  eventStore: EventStore
+  eventUis: EventUiHash
+  dateSelection: DateSpan | null
+  eventSelection: string
+  eventDrag: EventInteractionUiState | null
+  eventResize: EventInteractionUiState | null
+}
+
+// NOTE: for fg-events, eventRange.range is NOT sliced,
+// thus, we need isStart/isEnd
+export interface Seg {
+  component: DateComponent
+  isStart: boolean
+  isEnd: boolean
+  eventRange?: EventRenderRange
+  el?: HTMLElement
+  [otherProp: string]: any
+}
+
+export type DateComponentHash = { [id: string]: DateComponent }
+
+let uid = 0
 
 
 export default abstract class DateComponent extends Component {
 
-  static guid: number = 0 // TODO: better system for this?
+  // self-config, overridable by subclasses
+  isInteractable: boolean = false
+  useEventCenter: boolean = true // for dragging geometry
+  doesDragMirror: boolean = false // for events that ORIGINATE from this component
+  doesDragHighlight: boolean = false // for events that ORIGINATE from this component
+  fgSegSelector: string = '.fc-event-container > *' // lets eventRender produce elements without fc-event class
+  bgSegSelector: string = '.fc-bgevent'
+
+  // if defined, holds the unit identified (ex: "year" or "month") that determines the level of granularity
+  // of the date areas. if not defined, assumes to be day and time granularity.
+  // TODO: port isTimeScale into same system?
+  largeUnit: any
+
+  slicingType: 'timed' | 'all-day' | null = null
 
   eventRendererClass: any
-  helperRendererClass: any
-  businessHourRendererClass: any
+  mirrorRendererClass: any
   fillRendererClass: any
 
   uid: any
   childrenByUid: any
-  isRTL: boolean = false // frequently accessed options
-  nextDayThreshold: any // "
-  dateProfile: any // hack
+  isRtl: boolean = false // frequently accessed options
+  nextDayThreshold: Duration // "
+  view: View
+  emitter: EmitterMixin = new EmitterMixin()
 
   eventRenderer: any
-  helperRenderer: any
-  businessHourRenderer: any
+  mirrorRenderer: any
   fillRenderer: any
 
-  hitsNeededDepth: number = 0 // necessary because multiple callers might need the same hits
+  renderedFlags: any = {}
+  dirtySizeFlags: any = {}
+  needHitsDepth: number = 0
 
-  hasAllDayBusinessHours: boolean = false // TODO: unify with largeUnit and isTimeScale?
+  dateProfile: DateProfile = null
+  businessHours: EventStore = null
+  eventStore: EventStore = null
+  eventUis: EventUiHash = null
+  dateSelection: DateSpan = null
+  eventSelection: string = ''
+  eventDrag: EventInteractionUiState = null
+  eventResize: EventInteractionUiState = null
 
-  isDatesRendered: boolean = false
 
-
-  constructor(_view?, _options?) {
+  constructor(_view, _options?) {
     super()
 
     // hack to set options prior to the this.opt calls
-    if (_view) {
-      this['view'] = _view
-    }
+    this.view = _view || this
     if (_options) {
       this['options'] = _options
     }
 
-    this.uid = String(DateComponent.guid++)
+    this.uid = String(uid++)
     this.childrenByUid = {}
 
-    this.nextDayThreshold = moment.duration(this.opt('nextDayThreshold'))
-    this.isRTL = this.opt('isRTL')
+    this.nextDayThreshold = createDuration(this.opt('nextDayThreshold'))
+    this.isRtl = this.opt('isRtl')
 
     if (this.fillRendererClass) {
       this.fillRenderer = new this.fillRendererClass(this)
@@ -60,12 +118,8 @@ export default abstract class DateComponent extends Component {
       this.eventRenderer = new this.eventRendererClass(this, this.fillRenderer)
     }
 
-    if (this.helperRendererClass && this.eventRenderer) {
-      this.helperRenderer = new this.helperRendererClass(this, this.eventRenderer)
-    }
-
-    if (this.businessHourRendererClass && this.fillRenderer) {
-      this.businessHourRenderer = new this.businessHourRendererClass(this, this.fillRenderer)
+    if (this.mirrorRendererClass && this.eventRenderer) {
+      this.mirrorRenderer = new this.mirrorRendererClass(this, this.eventRenderer)
     }
   }
 
@@ -92,10 +146,93 @@ export default abstract class DateComponent extends Component {
   }
 
 
-  // TODO: only do if isInDom?
-  // TODO: make part of Component, along with children/batch-render system?
-  updateSize(totalHeight, isAuto, isResize) {
-    this.callChildren('updateSize', arguments)
+  updateSize(totalHeight, isAuto, force) {
+    let flags = this.dirtySizeFlags
+
+    if (force || flags.skeleton || flags.dates || flags.events) {
+      // sort of the catch-all sizing
+      // anything that might cause dimension changes
+      this.updateBaseSize(totalHeight, isAuto)
+      this.buildPositionCaches()
+    }
+
+    if (force || flags.businessHours) {
+      this.computeBusinessHoursSize()
+    }
+
+    if (force || flags.dateSelection || flags.eventDrag || flags.eventResize) {
+      this.computeHighlightSize()
+      this.computeMirrorSize()
+    }
+
+    if (force || flags.events) {
+      this.computeEventsSize()
+    }
+
+    if (force || flags.businessHours) {
+      this.assignBusinessHoursSize()
+    }
+
+    if (force || flags.dateSelection || flags.eventDrag || flags.eventResize) {
+      this.assignHighlightSize()
+      this.assignMirrorSize()
+    }
+
+    if (force || flags.events) {
+      this.assignEventsSize()
+    }
+
+    this.dirtySizeFlags = {}
+    this.callChildren('updateSize', arguments) // always do this at end?
+  }
+
+
+  updateBaseSize(totalHeight, isAuto) {
+  }
+
+
+  buildPositionCaches() {
+  }
+
+
+  requestPrepareHits() {
+    if (!(this.needHitsDepth++)) {
+      this.prepareHits()
+    }
+  }
+
+
+  requestReleaseHits() {
+    if (!(--this.needHitsDepth)) {
+      this.releaseHits()
+    }
+  }
+
+
+  protected prepareHits() {
+  }
+
+
+  protected releaseHits() {
+  }
+
+
+  queryHit(leftOffset, topOffset): Hit {
+    return null // this should be abstract
+  }
+
+
+  bindGlobalHandlers() {
+    if (this.isInteractable) {
+      browserContext.registerComponent(this)
+    }
+  }
+
+
+  unbindGlobalHandlers() {
+    if (this.isInteractable) {
+      browserContext.unregisterComponent(this)
+    }
   }
 
 
@@ -104,21 +241,264 @@ export default abstract class DateComponent extends Component {
 
 
   opt(name) {
-    return this._getView().opt(name) // default implementation
+    return this.view.options[name]
   }
 
 
-  publiclyTrigger(...args) {
-    let calendar = this._getCalendar()
+  // Triggering
+  // -----------------------------------------------------------------------------------------------------------------
 
-    return calendar.publiclyTrigger.apply(calendar, args)
+
+  publiclyTrigger(name, args) {
+    let calendar = this.getCalendar()
+
+    return calendar.publiclyTrigger(name, args)
   }
 
 
-  hasPublicHandlers(...args) {
-    let calendar = this._getCalendar()
+  publiclyTriggerAfterSizing(name, args) {
+    let calendar = this.getCalendar()
 
-    return calendar.hasPublicHandlers.apply(calendar, args)
+    return calendar.publiclyTriggerAfterSizing(name, args)
+  }
+
+
+  hasPublicHandlers(name) {
+    let calendar = this.getCalendar()
+
+    return calendar.hasPublicHandlers(name)
+  }
+
+
+  triggerRenderedSegs(segs: Seg[], isMirrors: boolean = false) {
+    if (this.hasPublicHandlers('eventPositioned')) {
+      let calendar = this.getCalendar()
+
+      for (let seg of segs) {
+        this.publiclyTriggerAfterSizing('eventPositioned', [
+          {
+            event: new EventApi(
+              calendar,
+              seg.eventRange.def,
+              seg.eventRange.instance
+            ),
+            isMirror: isMirrors,
+            isStart: seg.isStart,
+            isEnd: seg.isEnd,
+            el: seg.el,
+            view: this
+          }
+        ])
+      }
+    }
+  }
+
+
+  triggerWillRemoveSegs(segs: Seg[]) {
+
+    for (let seg of segs) {
+      this.emitter.trigger('eventElRemove', seg.el)
+    }
+
+    if (this.hasPublicHandlers('eventDestroy')) {
+      let calendar = this.getCalendar()
+
+      for (let seg of segs) {
+        this.publiclyTrigger('eventDestroy', [
+          {
+            event: new EventApi(
+              calendar,
+              seg.eventRange.def,
+              seg.eventRange.instance
+            ),
+            el: seg.el,
+            view: this
+          }
+        ])
+      }
+    }
+  }
+
+
+  // Root Rendering
+  // -----------------------------------------------------------------------------------------------------------------
+
+
+  render(renderState: DateComponentRenderState, forceFlags: RenderForceFlags) {
+    let { renderedFlags } = this
+    let dirtyFlags = {
+      skeleton: false,
+      dates: renderState.dateProfile !== this.dateProfile,
+      events: renderState.eventStore !== this.eventStore || renderState.eventUis !== this.eventUis,
+      businessHours: renderState.businessHours !== this.businessHours,
+      dateSelection: renderState.dateSelection !== this.dateSelection,
+      eventSelection: renderState.eventSelection !== this.eventSelection,
+      eventDrag: renderState.eventDrag !== this.eventDrag,
+      eventResize: renderState.eventResize !== this.eventResize
+    }
+
+    assignTo(dirtyFlags, forceFlags)
+
+    if (forceFlags === true) {
+      // everthing must be marked as dirty when doing a forced resize
+      for (let name in dirtyFlags) {
+        dirtyFlags[name] = true
+      }
+    } else {
+
+      // mark things that are still not rendered as dirty
+      for (let name in dirtyFlags) {
+        if (!renderedFlags[name]) {
+          dirtyFlags[name] = true
+        }
+      }
+
+      // when the dates are dirty, mark nearly everything else as dirty too
+      if (dirtyFlags.dates) {
+        for (let name in dirtyFlags) {
+          if (name !== 'skeleton') {
+            dirtyFlags[name] = true
+          }
+        }
+      }
+    }
+
+    this.unrender(dirtyFlags) // only unrender dirty things
+    assignTo(this, renderState) // assign incoming state to local state
+    this.renderByFlag(renderState, dirtyFlags) // only render dirty things
+    this.renderChildren(renderState, forceFlags)
+  }
+
+
+  renderByFlag(renderState: DateComponentRenderState, flags) {
+    let { renderedFlags, dirtySizeFlags } = this
+
+    if (flags.skeleton) {
+      this.renderSkeleton()
+      this.afterSkeletonRender()
+      renderedFlags.skeleton = true
+      dirtySizeFlags.skeleton = true
+    }
+
+    if (flags.dates && renderState.dateProfile) {
+      this.renderDates(renderState.dateProfile)
+      this.afterDatesRender()
+      renderedFlags.dates = true
+      dirtySizeFlags.dates = true
+    }
+
+    if (flags.businessHours && renderState.businessHours) {
+      this.renderBusinessHours(renderState.businessHours)
+      renderedFlags.businessHours = true
+      dirtySizeFlags.businessHours = true
+    }
+
+    if (flags.dateSelection && renderState.dateSelection) {
+      this.renderDateSelection(renderState.dateSelection)
+      renderedFlags.dateSelection = true
+      dirtySizeFlags.dateSelection = true
+    }
+
+    if (flags.events && renderState.eventStore) {
+      this.renderEvents(renderState.eventStore, renderState.eventUis)
+      renderedFlags.events = true
+      dirtySizeFlags.events = true
+    }
+
+    if (flags.eventSelection) {
+      this.selectEventsByInstanceId(renderState.eventSelection)
+      renderedFlags.eventSelection = true
+      dirtySizeFlags.eventSelection = true
+    }
+
+    if (flags.eventDrag && renderState.eventDrag) {
+      this.renderEventDragState(renderState.eventDrag)
+      renderedFlags.eventDrag = true
+      dirtySizeFlags.eventDrag = true
+    }
+
+    if (flags.eventResize && renderState.eventResize) {
+      this.renderEventResizeState(renderState.eventResize)
+      renderedFlags.eventResize = true
+      dirtySizeFlags.eventResize = true
+    }
+  }
+
+
+  unrender(flags?: any) {
+    let { renderedFlags } = this
+
+    if ((!flags || flags.eventResize) && renderedFlags.eventResize) {
+      this.unrenderEventResizeState()
+      renderedFlags.eventResize = false
+    }
+
+    if ((!flags || flags.eventDrag) && renderedFlags.eventDrag) {
+      this.unrenderEventDragState()
+      renderedFlags.eventDrag = false
+    }
+
+    if ((!flags || flags.eventSelection) && renderedFlags.eventSelection) {
+      this.unselectAllEvents()
+      renderedFlags.eventSelection = false
+    }
+
+    if ((!flags || flags.events) && renderedFlags.events) {
+      this.unrenderEvents()
+      renderedFlags.events = false
+    }
+
+    if ((!flags || flags.dateSelection) && renderedFlags.dateSelection) {
+      this.unrenderDateSelection()
+      renderedFlags.dateSelection = false
+    }
+
+    if ((!flags || flags.businessHours) && renderedFlags.businessHours) {
+      this.unrenderBusinessHours()
+      renderedFlags.businessHours = false
+    }
+
+    if ((!flags || flags.dates) && renderedFlags.dates) {
+      this.beforeDatesUnrender()
+      this.unrenderDates()
+      renderedFlags.dates = false
+    }
+
+    if ((!flags || flags.skeleton) && renderedFlags.skeleton) {
+      this.beforeSkeletonUnrender()
+      this.unrenderSkeleton()
+      renderedFlags.skeleton = false
+    }
+  }
+
+
+  renderChildren(renderState: DateComponentRenderState, forceFlags: RenderForceFlags) {
+    this.callChildren('render', arguments)
+  }
+
+
+  removeElement() {
+    this.unrender()
+    this.dirtySizeFlags = {}
+    super.removeElement()
+  }
+
+
+  // Skeleton
+  // -----------------------------------------------------------------------------------------------------------------
+
+
+  renderSkeleton() {
+    // subclasses should implement
+  }
+
+
+  afterSkeletonRender() { }
+  beforeSkeletonUnrender() { }
+
+
+  unrenderSkeleton() {
+    // subclasses should implement
   }
 
 
@@ -126,32 +506,21 @@ export default abstract class DateComponent extends Component {
   // -----------------------------------------------------------------------------------------------------------------
 
 
-  executeDateRender(dateProfile) {
-    this.dateProfile = dateProfile // for rendering
-    this.renderDates(dateProfile)
-    this.isDatesRendered = true
-    this.callChildren('executeDateRender', arguments)
-  }
-
-
-  executeDateUnrender() { // wrapper
-    this.callChildren('executeDateUnrender', arguments)
-    this.dateProfile = null
-    this.unrenderDates()
-    this.isDatesRendered = false
-  }
-
-
   // date-cell content only
-  renderDates(dateProfile) {
+  renderDates(dateProfile: DateProfile) {
     // subclasses should implement
   }
+
+
+  afterDatesRender() { }
+  beforeDatesUnrender() { }
 
 
   // date-cell content only
   unrenderDates() {
     // subclasses should override
   }
+
 
 
   // Now-Indicator
@@ -181,21 +550,53 @@ export default abstract class DateComponent extends Component {
   // ---------------------------------------------------------------------------------------------------------------
 
 
-  renderBusinessHours(businessHourGenerator) {
-    if (this.businessHourRenderer) {
-      this.businessHourRenderer.render(businessHourGenerator)
-    }
+  renderBusinessHours(businessHours: EventStore) {
+    if (this.slicingType) { // can use eventStoreToRanges?
+      let expandedStore = expandRecurring(businessHours, this.dateProfile.activeRange, this.getCalendar())
 
-    this.callChildren('renderBusinessHours', arguments)
+      this.renderBusinessHourRanges(
+        this.eventStoreToRanges(
+          expandedStore,
+          computeEventDefUis(expandedStore.defs, {}, {})
+        )
+      )
+    }
+  }
+
+
+  renderBusinessHourRanges(eventRanges: EventRenderRange[]) {
+    if (this.fillRenderer) {
+      this.fillRenderer.renderSegs(
+        'businessHours',
+        this.eventRangesToSegs(eventRanges),
+        {
+          getClasses(seg) {
+            return [ 'fc-bgevent' ].concat(seg.eventRange.def.classNames)
+          }
+        }
+      )
+    }
   }
 
 
   // Unrenders previously-rendered business-hours
   unrenderBusinessHours() {
-    this.callChildren('unrenderBusinessHours', arguments)
+    if (this.fillRenderer) {
+      this.fillRenderer.unrender('businessHours')
+    }
+  }
 
-    if (this.businessHourRenderer) {
-      this.businessHourRenderer.unrender()
+
+  computeBusinessHoursSize() {
+    if (this.fillRenderer) {
+      this.fillRenderer.computeSize('businessHours')
+    }
+  }
+
+
+  assignBusinessHoursSize() {
+    if (this.fillRenderer) {
+      this.fillRenderer.assignSize('businessHours')
     }
   }
 
@@ -204,164 +605,55 @@ export default abstract class DateComponent extends Component {
   // -----------------------------------------------------------------------------------------------------------------
 
 
-  executeEventRender(eventsPayload) {
+  renderEvents(eventStore: EventStore, eventUis: EventUiHash) {
+    if (this.slicingType) { // can use eventStoreToRanges?
+      this.renderEventRanges(
+        this.eventStoreToRanges(eventStore, eventUis)
+      )
+    }
+  }
+
+
+  renderEventRanges(eventRanges: EventRenderRange[]) {
     if (this.eventRenderer) {
       this.eventRenderer.rangeUpdated() // poorly named now
-      this.eventRenderer.render(eventsPayload)
-    } else if (this['renderEvents']) { // legacy
-      this['renderEvents'](convertEventsPayloadToLegacyArray(eventsPayload))
-    }
+      this.eventRenderer.renderSegs(
+        this.eventRangesToSegs(eventRanges)
+      )
 
-    this.callChildren('executeEventRender', arguments)
+      let calendar = this.getCalendar()
+      if (!calendar.state.loadingLevel) { // avoid initial empty state while pending
+        calendar.afterSizingTriggers._eventsPositioned = [ null ] // fire once
+      }
+    }
   }
 
 
-  executeEventUnrender() {
-    this.callChildren('executeEventUnrender', arguments)
-
+  unrenderEvents() {
     if (this.eventRenderer) {
+      this.triggerWillRemoveSegs(this.eventRenderer.getSegs())
       this.eventRenderer.unrender()
-    } else if (this['destroyEvents']) { // legacy
-      this['destroyEvents']()
     }
   }
 
 
-  getBusinessHourSegs() { // recursive
-    let segs = this.getOwnBusinessHourSegs()
-
-    this.iterChildren(function(child) {
-      segs.push.apply(segs, child.getBusinessHourSegs())
-    })
-
-    return segs
-  }
-
-
-  getOwnBusinessHourSegs() {
-    if (this.businessHourRenderer) {
-      return this.businessHourRenderer.getSegs()
+  computeEventsSize() {
+    if (this.fillRenderer) {
+      this.fillRenderer.computeSize('bgEvent')
     }
-
-    return []
-  }
-
-
-  getEventSegs() { // recursive
-    let segs = this.getOwnEventSegs()
-
-    this.iterChildren(function(child) {
-      segs.push.apply(segs, child.getEventSegs())
-    })
-
-    return segs
-  }
-
-
-  getOwnEventSegs() { // just for itself
     if (this.eventRenderer) {
-      return this.eventRenderer.getSegs()
-    }
-
-    return []
-  }
-
-
-  // Event Rendering Triggering
-  // -----------------------------------------------------------------------------------------------------------------
-
-
-  triggerAfterEventsRendered() {
-    this.triggerAfterEventSegsRendered(
-      this.getEventSegs()
-    )
-
-    this.publiclyTrigger('eventAfterAllRender', {
-      context: this,
-      args: [ this ]
-    })
-  }
-
-
-  triggerAfterEventSegsRendered(segs) {
-    // an optimization, because getEventLegacy is expensive
-    if (this.hasPublicHandlers('eventAfterRender')) {
-      segs.forEach((seg) => {
-        let legacy
-
-        if (seg.el) { // necessary?
-          legacy = seg.footprint.getEventLegacy()
-
-          this.publiclyTrigger('eventAfterRender', {
-            context: legacy,
-            args: [ legacy, seg.el, this ]
-          })
-        }
-      })
+      this.eventRenderer.computeFgSize()
     }
   }
 
 
-  triggerBeforeEventsDestroyed() {
-    this.triggerBeforeEventSegsDestroyed(
-      this.getEventSegs()
-    )
-  }
-
-
-  triggerBeforeEventSegsDestroyed(segs) {
-    if (this.hasPublicHandlers('eventDestroy')) {
-      segs.forEach((seg) => {
-        let legacy
-
-        if (seg.el) { // necessary?
-          legacy = seg.footprint.getEventLegacy()
-
-          this.publiclyTrigger('eventDestroy', {
-            context: legacy,
-            args: [ legacy, seg.el, this ]
-          })
-        }
-      })
+  assignEventsSize() {
+    if (this.fillRenderer) {
+      this.fillRenderer.assignSize('bgEvent')
     }
-  }
-
-
-  // Event Rendering Utils
-  // -----------------------------------------------------------------------------------------------------------------
-
-
-  // Hides all rendered event segments linked to the given event
-  // RECURSIVE with subcomponents
-  showEventsWithId(eventDefId) {
-
-    this.getEventSegs().forEach(function(seg) {
-      if (
-        seg.footprint.eventDef.id === eventDefId &&
-        seg.el // necessary?
-      ) {
-        seg.el.css('visibility', '')
-      }
-    })
-
-    this.callChildren('showEventsWithId', arguments)
-  }
-
-
-  // Shows all rendered event segments linked to the given event
-  // RECURSIVE with subcomponents
-  hideEventsWithId(eventDefId) {
-
-    this.getEventSegs().forEach(function(seg) {
-      if (
-        seg.footprint.eventDef.id === eventDefId &&
-        seg.el // necessary?
-      ) {
-        seg.el.css('visibility', 'hidden')
-      }
-    })
-
-    this.callChildren('hideEventsWithId', arguments)
+    if (this.eventRenderer) {
+      this.eventRenderer.assignFgSize()
+    }
   }
 
 
@@ -369,25 +661,54 @@ export default abstract class DateComponent extends Component {
   // ---------------------------------------------------------------------------------------------------------------
 
 
+  renderEventDragState(state: EventInteractionUiState) {
+    this.hideSegsByHash(state.affectedEvents.instances)
+    this.renderEventDrag(
+      state.mutatedEvents,
+      state.eventUis,
+      state.isEvent,
+      state.origSeg
+    )
+  }
+
+
+  unrenderEventDragState() {
+    this.showSegsByHash(this.eventDrag.affectedEvents.instances)
+    this.unrenderEventDrag()
+  }
+
+
   // Renders a visual indication of a event or external-element drag over the given drop zone.
   // If an external-element, seg will be `null`.
-  // Must return elements used for any mock events.
-  renderDrag(eventFootprints, seg, isTouch) {
-    let renderedHelper = false
+  renderEventDrag(eventStore: EventStore, eventUis: EventUiHash, isEvent: boolean, origSeg: Seg | null) {
+    let segs = this.eventRangesToSegs(
+      this.eventStoreToRanges(eventStore, eventUis)
+    )
 
-    this.iterChildren(function(child) {
-      if (child.renderDrag(eventFootprints, seg, isTouch)) {
-        renderedHelper = true
+    // if the user is dragging something that is considered an event with real event data,
+    // and this component likes to do drag mirrors OR the component where the seg came from
+    // likes to do drag mirrors, then render a drag mirror.
+    if (isEvent && (this.doesDragMirror || origSeg && origSeg.component.doesDragMirror)) {
+      if (this.mirrorRenderer) {
+        this.mirrorRenderer.renderEventDraggingSegs(segs, origSeg)
       }
-    })
+    }
 
-    return renderedHelper
+    // if it would be impossible to render a drag mirror OR this component likes to render
+    // highlights, then render a highlight.
+    if (!isEvent || this.doesDragHighlight) {
+      this.renderHighlightSegs(segs)
+    }
   }
 
 
   // Unrenders a visual indication of an event or external-element being dragged.
-  unrenderDrag() {
-    this.callChildren('unrenderDrag', arguments)
+  unrenderEventDrag() {
+    this.unrenderHighlight()
+
+    if (this.mirrorRenderer) {
+      this.mirrorRenderer.unrender()
+    }
   }
 
 
@@ -395,36 +716,126 @@ export default abstract class DateComponent extends Component {
   // ---------------------------------------------------------------------------------------------------------------
 
 
+  renderEventResizeState(state: EventInteractionUiState) {
+    this.hideSegsByHash(state.affectedEvents.instances)
+    this.renderEventResize(
+      state.mutatedEvents,
+      state.eventUis,
+      state.origSeg
+    )
+  }
+
+
+  unrenderEventResizeState() {
+    this.showSegsByHash(this.eventResize.affectedEvents.instances)
+    this.unrenderEventResize()
+  }
+
+
   // Renders a visual indication of an event being resized.
-  renderEventResize(eventFootprints, seg, isTouch) {
-    this.callChildren('renderEventResize', arguments)
+  renderEventResize(eventStore: EventStore, eventUis: EventUiHash, origSeg: any) {
+    // subclasses can implement
   }
 
 
   // Unrenders a visual indication of an event being resized.
   unrenderEventResize() {
-    this.callChildren('unrenderEventResize', arguments)
+    // subclasses can implement
   }
 
 
-  // Selection
+  // Seg Utils
+  // -----------------------------------------------------------------------------------------------------------------
+
+
+  hideSegsByHash(hash) {
+    this.getAllEventSegs().forEach(function(seg) {
+      if (hash[seg.eventRange.instance.instanceId]) {
+        seg.el.style.visibility = 'hidden'
+      }
+    })
+  }
+
+
+  showSegsByHash(hash) {
+    this.getAllEventSegs().forEach(function(seg) {
+      if (hash[seg.eventRange.instance.instanceId]) {
+        seg.el.style.visibility = ''
+      }
+    })
+  }
+
+
+  getAllEventSegs(): Seg[] {
+    if (this.eventRenderer) {
+      return this.eventRenderer.getSegs()
+    } else {
+      return []
+    }
+  }
+
+
+  // Event Instance Selection (aka long-touch focus)
+  // -----------------------------------------------------------------------------------------------------------------
+  // TODO: show/hide according to groupId?
+
+
+  selectEventsByInstanceId(instanceId) {
+    this.getAllEventSegs().forEach(function(seg) {
+      let eventInstance = seg.eventRange.instance
+      if (
+        eventInstance && eventInstance.instanceId === instanceId &&
+        seg.el // necessary?
+      ) {
+        seg.el.classList.add('fc-selected')
+      }
+    })
+  }
+
+
+  unselectAllEvents() {
+    this.getAllEventSegs().forEach(function(seg) {
+      if (seg.el) { // necessary?
+        seg.el.classList.remove('fc-selected')
+      }
+    })
+  }
+
+
+
+  // EXTERNAL Drag-n-Drop
+  // ---------------------------------------------------------------------------------------------------------------
+  // Doesn't need to implement a response, but must pass to children
+
+
+  handlExternalDragStart(ev, el, skipBinding) {
+    this.callChildren('handlExternalDragStart', arguments)
+  }
+
+
+  handleExternalDragMove(ev) {
+    this.callChildren('handleExternalDragMove', arguments)
+  }
+
+
+  handleExternalDragStop(ev) {
+    this.callChildren('handleExternalDragStop', arguments)
+  }
+
+
+  // DateSpan
   // ---------------------------------------------------------------------------------------------------------------
 
 
   // Renders a visual indication of the selection
-  // TODO: rename to `renderSelection` after legacy is gone
-  renderSelectionFootprint(componentFootprint) {
-    this.renderHighlight(componentFootprint)
-
-    this.callChildren('renderSelectionFootprint', arguments)
+  renderDateSelection(selection: DateSpan) {
+    this.renderHighlightSegs(this.selectionToSegs(selection, false))
   }
 
 
   // Unrenders a visual indication of selection
-  unrenderSelection() {
+  unrenderDateSelection() {
     this.unrenderHighlight()
-
-    this.callChildren('unrenderSelection', arguments)
   }
 
 
@@ -433,20 +844,14 @@ export default abstract class DateComponent extends Component {
 
 
   // Renders an emphasis on the given date range. Given a span (unzoned start/end and other misc data)
-  renderHighlight(componentFootprint) {
+  renderHighlightSegs(segs) {
     if (this.fillRenderer) {
-      this.fillRenderer.renderFootprint(
-        'highlight',
-        componentFootprint,
-        {
-          getClasses() {
-            return [ 'fc-highlight' ]
-          }
+      this.fillRenderer.renderSegs('highlight', segs, {
+        getClasses() {
+          return [ 'fc-highlight' ]
         }
-      )
+      })
     }
-
-    this.callChildren('renderHighlight', arguments)
   }
 
 
@@ -455,161 +860,108 @@ export default abstract class DateComponent extends Component {
     if (this.fillRenderer) {
       this.fillRenderer.unrender('highlight')
     }
-
-    this.callChildren('unrenderHighlight', arguments)
   }
 
 
-  // Hit Areas
-  // ---------------------------------------------------------------------------------------------------------------
-  // just because all DateComponents support this interface
-  // doesn't mean they need to have their own internal coord system. they can defer to sub-components.
-
-
-  hitsNeeded() {
-    if (!(this.hitsNeededDepth++)) {
-      this.prepareHits()
+  computeHighlightSize() {
+    if (this.fillRenderer) {
+      this.fillRenderer.computeSize('highlight')
     }
-
-    this.callChildren('hitsNeeded', arguments)
   }
 
 
-  hitsNotNeeded() {
-    if (this.hitsNeededDepth && !(--this.hitsNeededDepth)) {
-      this.releaseHits()
+  assignHighlightSize() {
+    if (this.fillRenderer) {
+      this.fillRenderer.assignSize('highlight')
     }
-
-    this.callChildren('hitsNotNeeded', arguments)
   }
 
 
-  prepareHits() {
-    // subclasses can implement
+  /*
+  ------------------------------------------------------------------------------------------------------------------*/
+
+
+  computeMirrorSize() {
+    if (this.mirrorRenderer) {
+      this.mirrorRenderer.computeSize()
+    }
   }
 
 
-  releaseHits() {
-    // subclasses can implement
+  assignMirrorSize() {
+    if (this.mirrorRenderer) {
+      this.mirrorRenderer.assignSize()
+    }
   }
 
 
-  // Given coordinates from the topleft of the document, return data about the date-related area underneath.
-  // Can return an object with arbitrary properties (although top/right/left/bottom are encouraged).
-  // Must have a `grid` property, a reference to this current grid. TODO: avoid this
-  // The returned object will be processed by getHitFootprint and getHitEl.
-  queryHit(leftOffset, topOffset) {
-    let childrenByUid = this.childrenByUid
-    let uid
-    let hit
+  /* Converting selection/eventRanges -> segs
+  ------------------------------------------------------------------------------------------------------------------*/
 
-    for (uid in childrenByUid) {
-      hit = childrenByUid[uid].queryHit(leftOffset, topOffset)
 
-      if (hit) {
-        break
+  eventStoreToRanges(eventStore: EventStore, eventUis: EventUiHash): EventRenderRange[] {
+    return sliceEventStore(
+      eventStore,
+      eventUis,
+      this.dateProfile.activeRange,
+      this.slicingType === 'all-day' ? this.nextDayThreshold : null
+    )
+  }
+
+
+  eventRangesToSegs(eventRenderRanges: EventRenderRange[]): Seg[] {
+    let allSegs: Seg[] = []
+
+    for (let eventRenderRange of eventRenderRanges) {
+      let segs = this.rangeToSegs(eventRenderRange.range, eventRenderRange.def.isAllDay)
+
+      for (let seg of segs) {
+        seg.eventRange = eventRenderRange
+        seg.isStart = seg.isStart && eventRenderRange.isStart
+        seg.isEnd = seg.isEnd && eventRenderRange.isEnd
+
+        allSegs.push(seg)
       }
     }
 
-    return hit
+    return allSegs
   }
 
 
-  getSafeHitFootprint(hit) {
-    let footprint = this.getHitFootprint(hit)
+  selectionToSegs(selection: DateSpan, fabricateEvents: boolean): Seg[] {
+    let segs = this.rangeToSegs(selection.range, selection.isAllDay)
 
-    if (!this.dateProfile.activeUnzonedRange.containsRange(footprint.unzonedRange)) {
-      return null
-    }
+    if (fabricateEvents) {
 
-    return footprint
-  }
-
-
-  getHitFootprint(hit): any {
-    // what about being abstract!?
-  }
-
-
-  // Given position-level information about a date-related area within the grid,
-  // should return a jQuery element that best represents it. passed to dayClick callback.
-  getHitEl(hit): any {
-    // what about being abstract!?
-  }
-
-
-  /* Converting eventRange -> eventFootprint
-  ------------------------------------------------------------------------------------------------------------------*/
-
-
-  eventRangesToEventFootprints(eventRanges) {
-    let eventFootprints = []
-    let i
-
-    for (i = 0; i < eventRanges.length; i++) {
-      eventFootprints.push.apply( // append
-        eventFootprints,
-        this.eventRangeToEventFootprints(eventRanges[i])
+      // fabricate an eventRange. important for mirror
+      // TODO: make a separate utility for this?
+      let def = parseEventDef(
+        { editable: false },
+        '', // sourceId
+        selection.isAllDay,
+        true, // hasEnd
+        this.getCalendar()
       )
-    }
+      let eventRange = {
+        def,
+        ui: computeEventDefUi(def, {}, {}),
+        instance: createEventInstance(def.defId, selection.range),
+        range: selection.range,
+        isStart: true,
+        isEnd: true
+      }
 
-    return eventFootprints
-  }
-
-
-  eventRangeToEventFootprints(eventRange): EventFootprint[] {
-    return [ eventRangeToEventFootprint(eventRange) ]
-  }
-
-
-  /* Converting componentFootprint/eventFootprint -> segs
-  ------------------------------------------------------------------------------------------------------------------*/
-
-
-  eventFootprintsToSegs(eventFootprints) {
-    let segs = []
-    let i
-
-    for (i = 0; i < eventFootprints.length; i++) {
-      segs.push.apply(segs,
-        this.eventFootprintToSegs(eventFootprints[i])
-      )
+      for (let seg of segs) {
+        seg.eventRange = eventRange
+      }
     }
 
     return segs
   }
 
 
-  // Given an event's span (unzoned start/end and other misc data), and the event itself,
-  // slices into segments and attaches event-derived properties to them.
-  // eventSpan - { start, end, isStart, isEnd, otherthings... }
-  eventFootprintToSegs(eventFootprint) {
-    let unzonedRange = eventFootprint.componentFootprint.unzonedRange
-    let segs
-    let i
-    let seg
-
-    segs = this.componentFootprintToSegs(eventFootprint.componentFootprint)
-
-    for (i = 0; i < segs.length; i++) {
-      seg = segs[i]
-
-      if (!unzonedRange.isStart) {
-        seg.isStart = false
-      }
-      if (!unzonedRange.isEnd) {
-        seg.isEnd = false
-      }
-
-      seg.footprint = eventFootprint
-      // TODO: rename to seg.eventFootprint
-    }
-
-    return segs
-  }
-
-
-  componentFootprintToSegs(componentFootprint) {
+  // must implement if want to use many of the rendering utils
+  rangeToSegs(range: DateRange, isAllDay: boolean): Seg[] {
     return []
   }
 
@@ -635,45 +987,45 @@ export default abstract class DateComponent extends Component {
   }
 
 
-  _getCalendar() { // TODO: strip out. move to generic parent.
-    let t = (this as any)
-    return t.calendar || t.view.calendar
+  getCalendar(): Calendar {
+    return this.view.calendar
   }
 
 
-  _getView() { // TODO: strip out. move to generic parent.
-    return (this as any).view
+  getDateEnv(): DateEnv {
+    return this.getCalendar().dateEnv
   }
 
 
-  _getDateProfile() {
-    return this._getView().get('dateProfile')
+  getTheme(): Theme {
+    return this.getCalendar().theme
   }
 
 
   // Generates HTML for an anchor to another view into the calendar.
   // Will either generate an <a> tag or a non-clickable <span> tag, depending on enabled settings.
-  // `gotoOptions` can either be a moment input, or an object with the form:
+  // `gotoOptions` can either be a date input, or an object with the form:
   // { date, type, forceOff }
   // `type` is a view-type like "day" or "week". default value is "day".
   // `attrs` and `innerHtml` are use to generate the rest of the HTML tag.
   buildGotoAnchorHtml(gotoOptions, attrs, innerHtml) {
+    let dateEnv = this.getDateEnv()
     let date
     let type
     let forceOff
     let finalOptions
 
-    if ($.isPlainObject(gotoOptions)) {
+    if (gotoOptions instanceof Date || typeof gotoOptions !== 'object') {
+      date = gotoOptions // a single date-like input
+    } else {
       date = gotoOptions.date
       type = gotoOptions.type
       forceOff = gotoOptions.forceOff
-    } else {
-      date = gotoOptions // a single moment input
     }
-    date = momentExt(date) // if a string, parse it
+    date = dateEnv.createMarker(date) // if a string, parse it
 
     finalOptions = { // for serialization into the link
-      date: date.format('YYYY-MM-DD'),
+      date: dateEnv.formatIso(date, { omitTime: true }),
       type: type || 'day'
     }
 
@@ -704,32 +1056,34 @@ export default abstract class DateComponent extends Component {
 
 
   // Computes HTML classNames for a single-day element
-  getDayClasses(date, noThemeHighlight?) {
-    let view = this._getView()
+  getDayClasses(date: DateMarker, noThemeHighlight?) {
+    let view = this.view
     let classes = []
-    let today
+    let todayStart: DateMarker
+    let todayEnd: DateMarker
 
-    if (!this.dateProfile.activeUnzonedRange.containsDate(date)) {
+    if (!rangeContainsMarker(this.dateProfile.activeRange, date)) {
       classes.push('fc-disabled-day') // TODO: jQuery UI theme?
     } else {
-      classes.push('fc-' + dayIDs[date.day()])
+      classes.push('fc-' + DAY_IDS[date.getUTCDay()])
 
       if (view.isDateInOtherMonth(date, this.dateProfile)) { // TODO: use DateComponent subclass somehow
         classes.push('fc-other-month')
       }
 
-      today = view.calendar.getNow()
+      todayStart = startOfDay(view.calendar.getNow())
+      todayEnd = addDays(todayStart, 1)
 
-      if (date.isSame(today, 'day')) {
+      if (date < todayStart) {
+        classes.push('fc-past')
+      } else if (date >= todayEnd) {
+        classes.push('fc-future')
+      } else {
         classes.push('fc-today')
 
         if (noThemeHighlight !== true) {
           classes.push(view.calendar.theme.getClass('today'))
         }
-      } else if (date < today) {
-        classes.push('fc-past')
-      } else {
-        classes.push('fc-future')
       }
     }
 
@@ -737,79 +1091,77 @@ export default abstract class DateComponent extends Component {
   }
 
 
-  // Utility for formatting a range. Accepts a range object, formatting string, and optional separator.
-  // Displays all-day ranges naturally, with an inclusive end. Takes the current isRTL into account.
-  // The timezones of the dates within `range` will be respected.
-  formatRange(range, isAllDay, formatStr, separator) {
-    let end = range.end
-
-    if (isAllDay) {
-      end = end.clone().subtract(1) // convert to inclusive. last ms of previous day
-    }
-
-    return formatRange(range.start, end, formatStr, separator, this.isRTL)
-  }
-
-
   // Compute the number of the give units in the "current" range.
-  // Will return a floating-point number. Won't round.
-  currentRangeAs(unit) {
-    return this._getDateProfile().currentUnzonedRange.as(unit)
-  }
+  // Won't go more precise than days.
+  // Will return `0` if there's not a clean whole interval.
+  currentRangeAs(unit) { // PLURAL :(
+    let dateEnv = this.getDateEnv()
+    let range = this.dateProfile.currentRange
+    let res = null
 
-
-  // Returns the date range of the full days the given range visually appears to occupy.
-  // Returns a plain object with start/end, NOT an UnzonedRange!
-  computeDayRange(unzonedRange) {
-    let calendar = this._getCalendar()
-    let startDay = calendar.msToUtcMoment(unzonedRange.startMs, true) // the beginning of the day the range starts
-    let end = calendar.msToUtcMoment(unzonedRange.endMs)
-    let endTimeMS = +end.time() // # of milliseconds into `endDay`
-    let endDay = end.clone().stripTime() // the beginning of the day the range exclusively ends
-
-    // If the end time is actually inclusively part of the next day and is equal to or
-    // beyond the next day threshold, adjust the end to be the exclusive end of `endDay`.
-    // Otherwise, leaving it as inclusive will cause it to exclude `endDay`.
-    if (endTimeMS && endTimeMS >= this.nextDayThreshold) {
-      endDay.add(1, 'days')
+    if (unit === 'years') {
+      res = dateEnv.diffWholeYears(range.start, range.end)
+    } else if (unit === 'months') {
+      res = dateEnv.diffWholeMonths(range.start, range.end)
+    } else if (unit === 'weeks') {
+      res = dateEnv.diffWholeMonths(range.start, range.end)
+    } else if (unit === 'days') {
+      res = diffWholeDays(range.start, range.end)
     }
 
-    // If end is within `startDay` but not past nextDayThreshold, assign the default duration of one day.
-    if (endDay <= startDay) {
-      endDay = startDay.clone().add(1, 'days')
+    return res || 0
+  }
+
+
+  isValidSegDownEl(el: HTMLElement) {
+    return !this.eventDrag && !this.eventResize &&
+      !elementClosest(el, '.fc-mirror') &&
+      !this.isInPopover(el)
+  }
+
+
+  isValidDateDownEl(el: HTMLElement) {
+    let segEl = elementClosest(el, this.fgSegSelector)
+
+    return (!segEl || segEl.classList.contains('fc-mirror')) &&
+      !elementClosest(el, '.fc-more') && // a "more.." link
+      !elementClosest(el, 'a[data-goto]') && // a clickable nav link
+      !this.isInPopover(el)
+  }
+
+
+  // is the element inside of an inner popover?
+  isInPopover(el: HTMLElement) {
+    let popoverEl = elementClosest(el, '.fc-popover')
+    return popoverEl && popoverEl !== this.el // if the current component IS a popover, okay
+  }
+
+  isEventsValid(eventStore: EventStore) {
+    let { dateProfile } = this
+    let instances = eventStore.instances
+
+    if (dateProfile) { // HACK for DayTile
+      for (let instanceId in instances) {
+        if (!rangeContainsRange(dateProfile.validRange, instances[instanceId].range)) {
+          return false
+        }
+      }
     }
 
-    return { start: startDay, end: endDay }
+    return isEventsValid(eventStore, this.getCalendar())
   }
 
+  isSelectionValid(selection: DateSpan): boolean {
+    let { dateProfile } = this
 
-  // Does the given range visually appear to occupy more than one day?
-  isMultiDayRange(unzonedRange) {
-    let dayRange = this.computeDayRange(unzonedRange)
-
-    return dayRange.end.diff(dayRange.start, 'days') > 1
-  }
-
-}
-
-
-// legacy
-
-function convertEventsPayloadToLegacyArray(eventsPayload) {
-  let eventDefId
-  let eventInstances
-  let legacyEvents = []
-  let i
-
-  for (eventDefId in eventsPayload) {
-    eventInstances = eventsPayload[eventDefId].eventInstances
-
-    for (i = 0; i < eventInstances.length; i++) {
-      legacyEvents.push(
-        eventInstances[i].toLegacy()
-      )
+    if (
+      dateProfile && // HACK for DayTile
+      !rangeContainsRange(dateProfile.validRange, selection.range)
+    ) {
+      return false
     }
+
+    return isSelectionValid(selection, this.getCalendar())
   }
 
-  return legacyEvents
 }

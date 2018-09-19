@@ -6,7 +6,7 @@ describe('setting option dynamically', function() {
 
     initCalendar({
       defaultView: 'month',
-      events: function(start, end, timezone, callback) {
+      events: function(arg, callback) {
         fetchCnt++
         callback([])
       }
@@ -14,7 +14,7 @@ describe('setting option dynamically', function() {
 
     expect(fetchCnt).toBe(1)
 
-    currentCalendar.option('selectable', true)
+    currentCalendar.setOption('selectable', true)
 
     setTimeout(function() { // in case async
       expect(fetchCnt).toBe(1)

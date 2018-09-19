@@ -1,9 +1,10 @@
+import { getFirstDayEl } from './DayGridRenderUtils'
 
 describe('columnHeaderHtml', function() {
   pushOptions({
     defaultDate: '2014-05-11',
     columnHeaderHtml: function(date) {
-      return '<div class="test">' + date.format('dddd') + '</div>'
+      return '<div class="test">' + currentCalendar.formatDate(date, { weekday: 'long' }) + '</div>'
     }
   })
 
@@ -20,7 +21,7 @@ describe('columnHeaderHtml', function() {
   })
 
   function hasCustomHtml() {
-    var firstHeader = $('.fc-day-header:first')
+    var firstHeader = getFirstDayEl()
 
     return firstHeader.find('.test').length === 1 && firstHeader.text() === 'Sunday'
   }

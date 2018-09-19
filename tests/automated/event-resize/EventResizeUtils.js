@@ -27,16 +27,12 @@ export function resize(rect0, rect1, debug) {
     debug: debug
   })
 
-  currentCalendar.on('eventResizeStop', function() {
-    setTimeout(function() {
-      deferred.resolve({ isSuccess: false }) // won't do anything if already eventResize
-    }, 20) // will happen after eventResize's timeout
+  currentCalendar.on('eventResize', function(arg) {
+    deferred.resolve(arg)
   })
 
-  currentCalendar.on('eventResize', function(event) { // always called after eventDragStop, if success
-    setTimeout(function() {
-      deferred.resolve({ isSuccess: true, event: event })
-    }, 10) // will happen first
+  currentCalendar.on('_noEventResize', function() {
+    deferred.resolve(false)
   })
 
   return deferred.promise()

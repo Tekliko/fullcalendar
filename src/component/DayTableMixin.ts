@@ -1,19 +1,24 @@
-import { htmlEscape, dayIDs } from '../util'
+import { htmlEscape } from '../util/html'
+import { prependToElement, appendToElement } from '../util/dom-manip'
 import Mixin from '../common/Mixin'
+import { DateMarker, DAY_IDS, addDays, diffDays } from '../datelib/marker'
+import { createFormatter } from '../datelib/formatting'
+import { DateRange, rangeContainsMarker } from '../datelib/date-range'
 
 export interface DayTableInterface {
-  dayDates: any
+  dayDates: DateMarker[]
   daysPerRow: any
   rowCnt: any
   colCnt: any
+  breakOnWeeks: boolean
   updateDayTable()
   renderHeadHtml()
   renderBgTrHtml(row)
-  bookendCells(trEl)
+  bookendCells(trEl: HTMLElement)
   getCellDate(row, col)
-  getCellRange(row, col)
-  sliceRangeByDay(unzonedRange)
-  sliceRangeByRow(unzonedRange)
+  getCellRange(row, col): DateRange
+  sliceRangeByDay(range)
+  sliceRangeByRow(range)
   renderIntroHtml()
 }
 
@@ -24,7 +29,7 @@ Prerequisite: the object being mixed into needs to be a *Grid*
 export default class DayTableMixin extends Mixin implements DayTableInterface {
 
   breakOnWeeks: boolean // should create a new row for each week? not specified, so default is FALSY
-  dayDates: any // whole-day dates for each column. left to right
+  dayDates: DateMarker[] // whole-day dates for each column. left to right
   dayIndices: any // for each day from start, the offset
   daysPerRow: any
   rowCnt: any
@@ -36,32 +41,32 @@ export default class DayTableMixin extends Mixin implements DayTableInterface {
   updateDayTable() {
     let t = (this as any)
     let view = t.view
-    let calendar = view.calendar
-    let date = calendar.msToUtcMoment(t.dateProfile.renderUnzonedRange.startMs, true)
-    let end = calendar.msToUtcMoment(t.dateProfile.renderUnzonedRange.endMs, true)
+    let dateProfile = t.dateProfile
+    let date: DateMarker = dateProfile.renderRange.start
+    let end: DateMarker = dateProfile.renderRange.end
     let dayIndex = -1
     let dayIndices = []
-    let dayDates = []
+    let dayDates: DateMarker[] = []
     let daysPerRow
     let firstDay
     let rowCnt
 
-    while (date.isBefore(end)) { // loop each day from start to end
+    while (date < end) { // loop each day from start to end
       if (view.isHiddenDay(date)) {
         dayIndices.push(dayIndex + 0.5) // mark that it's between indices
       } else {
         dayIndex++
         dayIndices.push(dayIndex)
-        dayDates.push(date.clone())
+        dayDates.push(date)
       }
-      date.add(1, 'days')
+      date = addDays(date, 1)
     }
 
     if (this.breakOnWeeks) {
       // count columns until the day-of-week repeats
-      firstDay = dayDates[0].day()
+      firstDay = dayDates[0].getUTCDay()
       for (daysPerRow = 1; daysPerRow < dayDates.length; daysPerRow++) {
-        if (dayDates[daysPerRow].day() === firstDay) {
+        if (dayDates[daysPerRow].getUTCDay() === firstDay) {
           break
         }
       }
@@ -83,10 +88,10 @@ export default class DayTableMixin extends Mixin implements DayTableInterface {
   // Computes and assigned the colCnt property and updates any options that may be computed from it
   updateDayTableCols() {
     this.colCnt = this.computeColCnt()
-    this.colHeadFormat =
+    this.colHeadFormat = createFormatter(
       (this as any).opt('columnHeaderFormat') ||
-      (this as any).opt('columnFormat') || // deprecated
       this.computeColHeadFormat()
+    )
   }
 
 
@@ -96,20 +101,18 @@ export default class DayTableMixin extends Mixin implements DayTableInterface {
   }
 
 
-  // Computes the ambiguously-timed moment for the given cell
-  getCellDate(row, col) {
-    return this.dayDates[
-        this.getCellDayIndex(row, col)
-      ].clone()
+  // Computes the DateMarker for the given cell
+  getCellDate(row, col): DateMarker {
+    return this.dayDates[this.getCellDayIndex(row, col)]
   }
 
 
   // Computes the ambiguously-timed date range for the given cell
-  getCellRange(row, col) {
+  getCellRange(row, col): DateRange {
     let start = this.getCellDate(row, col)
-    let end = start.clone().add(1, 'days')
+    let end = addDays(start, 1)
 
-    return { start: start, end: end }
+    return { start, end }
   }
 
 
@@ -121,7 +124,7 @@ export default class DayTableMixin extends Mixin implements DayTableInterface {
 
   // Returns the numner of day cells, chronologically, from the first cell in *any given row*
   getColDayIndex(col) {
-    if ((this as any).isRTL) {
+    if ((this as any).isRtl) {
       return this.colCnt - 1 - col
     } else {
       return col
@@ -136,7 +139,7 @@ export default class DayTableMixin extends Mixin implements DayTableInterface {
   // Only works for *start* dates of cells. Will not work for exclusive end dates for cells.
   getDateDayIndex(date) {
     let dayIndices = this.dayIndices
-    let dayOffset = date.diff(this.dayDates[0], 'days')
+    let dayOffset = Math.floor(diffDays(this.dayDates[0], date))
 
     if (dayOffset < 0) {
       return dayIndices[0] - 1
@@ -157,11 +160,11 @@ export default class DayTableMixin extends Mixin implements DayTableInterface {
     // if more than one week row, or if there are a lot of columns with not much space,
     // put just the day numbers will be in each cell
     if (this.rowCnt > 1 || this.colCnt > 10) {
-      return 'ddd' // "Sat"
+      return { weekday: 'short' } // "Sat"
     } else if (this.colCnt > 1) {
-      return (this as any).opt('dayOfMonthFormat') // "Sat 12/10"
+      return { weekday: 'short', month: 'numeric', day: 'numeric', omitCommas: true } // "Sat 11/12"
     } else {
-      return 'dddd' // "Saturday"
+      return { weekday: 'long' } // "Saturday"
     }
   }
 
@@ -171,11 +174,11 @@ export default class DayTableMixin extends Mixin implements DayTableInterface {
 
 
   // Slices up a date range into a segment for every week-row it intersects with
-  sliceRangeByRow(unzonedRange) {
+  // range already normalized to start-of-day
+  sliceRangeByRow(range) {
     let daysPerRow = this.daysPerRow
-    let normalRange = (this as any).view.computeDayRange(unzonedRange) // make whole-day range, considering nextDayThreshold
-    let rangeFirst = this.getDateDayIndex(normalRange.start) // inclusive first index
-    let rangeLast = this.getDateDayIndex(normalRange.end.clone().subtract(1, 'days')) // inclusive last index
+    let rangeFirst = this.getDateDayIndex(range.start) // inclusive first index
+    let rangeLast = this.getDateDayIndex(addDays(range.end, -1)) // inclusive last index
     let segs = []
     let row
     let rowFirst
@@ -215,12 +218,12 @@ export default class DayTableMixin extends Mixin implements DayTableInterface {
 
 
   // Slices up a date range into a segment for every day-cell it intersects with.
+  // range already normalized to start-of-day
   // TODO: make more DRY with sliceRangeByRow somehow.
-  sliceRangeByDay(unzonedRange) {
+  sliceRangeByDay(range) {
     let daysPerRow = this.daysPerRow
-    let normalRange = (this as any).view.computeDayRange(unzonedRange) // make whole-day range, considering nextDayThreshold
-    let rangeFirst = this.getDateDayIndex(normalRange.start) // inclusive first index
-    let rangeLast = this.getDateDayIndex(normalRange.end.clone().subtract(1, 'days')) // inclusive last index
+    let rangeFirst = this.getDateDayIndex(range.start) // inclusive first index
+    let rangeLast = this.getDateDayIndex(addDays(range.end, -1)) // inclusive last index
     let segs = []
     let row
     let rowFirst
@@ -268,7 +271,7 @@ export default class DayTableMixin extends Mixin implements DayTableInterface {
 
 
   renderHeadHtml() {
-    let theme = (this as any).view.calendar.theme
+    let theme = (this as any).getTheme()
 
     return '' +
       '<div class="fc-row ' + theme.getClass('headerRow') + '">' +
@@ -289,9 +292,9 @@ export default class DayTableMixin extends Mixin implements DayTableInterface {
   renderHeadTrHtml() {
     return '' +
       '<tr>' +
-        ((this as any).isRTL ? '' : this.renderHeadIntroHtml()) +
+        ((this as any).isRtl ? '' : this.renderHeadIntroHtml()) +
         this.renderHeadDateCellsHtml() +
-        ((this as any).isRTL ? this.renderHeadIntroHtml() : '') +
+        ((this as any).isRtl ? this.renderHeadIntroHtml() : '') +
       '</tr>'
   }
 
@@ -299,7 +302,7 @@ export default class DayTableMixin extends Mixin implements DayTableInterface {
   renderHeadDateCellsHtml() {
     let htmls = []
     let col
-    let date
+    let date: DateMarker
 
     for (col = 0; col < this.colCnt; col++) {
       date = this.getCellDate(0, col)
@@ -312,10 +315,12 @@ export default class DayTableMixin extends Mixin implements DayTableInterface {
 
   // TODO: when internalApiVersion, accept an object for HTML attributes
   // (colspan should be no different)
-  renderHeadDateCellHtml(date, colspan, otherAttrs) {
+  renderHeadDateCellHtml(date: DateMarker, colspan, otherAttrs) {
     let t = (this as any)
     let view = t.view
-    let isDateValid = t.dateProfile.activeUnzonedRange.containsDate(date) // TODO: called too frequently. cache somehow.
+    let dateEnv = t.getDateEnv()
+    let dateProfile = t.dateProfile
+    let isDateValid =  rangeContainsMarker(dateProfile.activeRange, date) // TODO: called too frequently. cache somehow.
     let classNames = [
       'fc-day-header',
       view.calendar.theme.getClass('widgetHeader')
@@ -325,9 +330,11 @@ export default class DayTableMixin extends Mixin implements DayTableInterface {
     if (typeof t.opt('columnHeaderHtml') === 'function') {
       innerHtml = t.opt('columnHeaderHtml')(date)
     } else if (typeof t.opt('columnHeaderText') === 'function') {
-      innerHtml = htmlEscape(t.opt('columnHeaderText')(date))
+      innerHtml = htmlEscape(
+        t.opt('columnHeaderText')(date)
+      )
     } else {
-      innerHtml = htmlEscape(date.format(t.colHeadFormat))
+      innerHtml = htmlEscape(dateEnv.format(date, t.colHeadFormat))
     }
 
     // if only one row of days, the classNames on the header can represent the specific days beneath
@@ -338,13 +345,13 @@ export default class DayTableMixin extends Mixin implements DayTableInterface {
         t.getDayClasses(date, true)
       )
     } else {
-      classNames.push('fc-' + dayIDs[date.day()]) // only add the day-of-week class
+      classNames.push('fc-' + DAY_IDS[date.getUTCDay()]) // only add the day-of-week class
     }
 
     return '' +
       '<th class="' + classNames.join(' ') + '"' +
         ((isDateValid && t.rowCnt) === 1 ?
-          ' data-date="' + date.format('YYYY-MM-DD') + '"' :
+          ' data-date="' + dateEnv.formatIso(date, { omitTime: true }) + '"' :
           '') +
         (colspan > 1 ?
           ' colspan="' + colspan + '"' :
@@ -373,9 +380,9 @@ export default class DayTableMixin extends Mixin implements DayTableInterface {
   renderBgTrHtml(row) {
     return '' +
       '<tr>' +
-        ((this as any).isRTL ? '' : this.renderBgIntroHtml(row)) +
+        ((this as any).isRtl ? '' : this.renderBgIntroHtml(row)) +
         this.renderBgCellsHtml(row) +
-        ((this as any).isRTL ? this.renderBgIntroHtml(row) : '') +
+        ((this as any).isRtl ? this.renderBgIntroHtml(row) : '') +
       '</tr>'
   }
 
@@ -399,17 +406,19 @@ export default class DayTableMixin extends Mixin implements DayTableInterface {
   }
 
 
-  renderBgCellHtml(date, otherAttrs) {
+  renderBgCellHtml(date: DateMarker, otherAttrs) {
     let t = (this as any)
     let view = t.view
-    let isDateValid = t.dateProfile.activeUnzonedRange.containsDate(date) // TODO: called too frequently. cache somehow.
+    let dateEnv = t.getDateEnv()
+    let dateProfile = t.dateProfile
+    let isDateValid = rangeContainsMarker(dateProfile.activeRange, date) // TODO: called too frequently. cache somehow.
     let classes = t.getDayClasses(date)
 
     classes.unshift('fc-day', view.calendar.theme.getClass('widgetContent'))
 
     return '<td class="' + classes.join(' ') + '"' +
       (isDateValid ?
-        ' data-date="' + date.format('YYYY-MM-DD') + '"' : // if date has a time, won't format it
+        ' data-date="' + dateEnv.formatIso(date, { omitTime: true }) + '"' :
         '') +
       (otherAttrs ?
         ' ' + otherAttrs :
@@ -422,8 +431,9 @@ export default class DayTableMixin extends Mixin implements DayTableInterface {
   ------------------------------------------------------------------------------------------------------------------*/
 
 
-  renderIntroHtml() {
-    // Generates the default HTML intro for any row. User classes should override
+  // Generates the default HTML intro for any row. User classes should override
+  renderIntroHtml(): string {
+    return ''
   }
 
 
@@ -438,14 +448,14 @@ export default class DayTableMixin extends Mixin implements DayTableInterface {
 
   // Applies the generic "intro" and "outro" HTML to the given cells.
   // Intro means the leftmost cell when the calendar is LTR and the rightmost cell when RTL. Vice-versa for outro.
-  bookendCells(trEl) {
+  bookendCells(trEl: HTMLElement) {
     let introHtml = this.renderIntroHtml()
 
     if (introHtml) {
-      if ((this as any).isRTL) {
-        trEl.append(introHtml)
+      if ((this as any).isRtl) {
+        appendToElement(trEl, introHtml)
       } else {
-        trEl.prepend(introHtml)
+        prependToElement(trEl, introHtml)
       }
     }
   }

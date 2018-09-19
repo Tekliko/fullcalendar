@@ -1,34 +1,35 @@
-import * as $ from 'jquery'
-import * as moment from 'moment'
-import { parseFieldSpecs, proxy, isPrimaryMouseButton } from './util'
-import RenderQueue from './common/RenderQueue'
+import { assignTo } from './util/object'
+import { parseFieldSpecs } from './util/misc'
 import Calendar from './Calendar'
-import DateProfileGenerator from './DateProfileGenerator'
-import InteractiveDateComponent from './component/InteractiveDateComponent'
-import GlobalEmitter from './common/GlobalEmitter'
-import UnzonedRange from './models/UnzonedRange'
-import EventInstance from './models/event/EventInstance'
+import { default as DateProfileGenerator, DateProfile } from './DateProfileGenerator'
+import DateComponent from './component/DateComponent'
+import { DateMarker, addDays, addMs, diffWholeDays } from './datelib/marker'
+import { createDuration } from './datelib/duration'
+import { createFormatter } from './datelib/formatting'
+import { default as EmitterMixin, EmitterInterface } from './common/EmitterMixin'
+import { OpenDateRange, parseRange, DateRange, rangesEqual } from './datelib/date-range'
 
 
 /* An abstract class from which other views inherit from
 ----------------------------------------------------------------------------------------------------------------------*/
 
-export default abstract class View extends InteractiveDateComponent {
+export default abstract class View extends DateComponent {
+
+  on: EmitterInterface['on']
+  one: EmitterInterface['one']
+  off: EmitterInterface['off']
+  trigger: EmitterInterface['trigger']
+  triggerWith: EmitterInterface['triggerWith']
+  hasHandlers: EmitterInterface['hasHandlers']
 
   type: string // subclass' view name (string)
-  name: string // deprecated. use `type` instead
   title: string // the text that will be displayed in the header's title
 
   calendar: Calendar // owner Calendar object
   viewSpec: any
   options: any // hash containing all options. already merged with view-specific-options
 
-  renderQueue: RenderQueue
-  batchRenderDepth: number = 0
-  queuedScroll: object
-
-  isSelected: boolean = false // boolean whether a range of time is user-selected or not
-  selectedEventInstance: EventInstance
+  queuedScroll: any
 
   eventOrderSpecs: any // criteria for ordering events when they have same date/time
 
@@ -37,23 +38,17 @@ export default abstract class View extends InteractiveDateComponent {
 
   // now indicator
   isNowIndicatorRendered: boolean
-  initialNowDate: moment.Moment // result first getNow call
+  initialNowDate: DateMarker // result first getNow call
   initialNowQueriedMs: number // ms time the getNow was called
   nowIndicatorTimeoutID: any // for refresh timing of now indicator
   nowIndicatorIntervalID: any // "
 
   dateProfileGeneratorClass: any // initialized after class
-  dateProfileGenerator: any
+  dateProfileGenerator: DateProfileGenerator
 
-  // whether minTime/maxTime will affect the activeUnzonedRange. Views must opt-in.
+  // whether minTime/maxTime will affect the activeRange. Views must opt-in.
   // initialized after class
   usesMinMaxTime: boolean
-
-  // DEPRECATED
-  start: moment.Moment // use activeUnzonedRange
-  end: moment.Moment // use activeUnzonedRange
-  intervalStart: moment.Moment // use currentUnzonedRange
-  intervalEnd: moment.Moment // use currentUnzonedRange
 
 
   constructor(calendar, viewSpec) {
@@ -65,24 +60,16 @@ export default abstract class View extends InteractiveDateComponent {
     // shortcuts
     this.type = viewSpec.type
 
-    // .name is deprecated
-    this.name = this.type
-
-    this.initRenderQueue()
     this.initHiddenDays()
     this.dateProfileGenerator = new this.dateProfileGeneratorClass(this)
-    this.bindBaseRenderHandlers()
+
     this.eventOrderSpecs = parseFieldSpecs(this.opt('eventOrder'))
 
-    // legacy
-    if (this['initialize']) {
-      this['initialize']()
-    }
+    this.initialize()
   }
 
 
-  _getView() {
-    return this
+  initialize() { // convenient for sublcasses
   }
 
 
@@ -92,89 +79,30 @@ export default abstract class View extends InteractiveDateComponent {
   }
 
 
-  /* Render Queue
-  ------------------------------------------------------------------------------------------------------------------*/
-
-
-  initRenderQueue() {
-    this.renderQueue = new RenderQueue({
-      event: this.opt('eventRenderWait')
-    })
-
-    this.renderQueue.on('start', this.onRenderQueueStart.bind(this))
-    this.renderQueue.on('stop', this.onRenderQueueStop.bind(this))
-
-    this.on('before:change', this.startBatchRender)
-    this.on('change', this.stopBatchRender)
-  }
-
-
-  onRenderQueueStart() {
-    this.calendar.freezeContentHeight()
-    this.addScroll(this.queryScroll())
-  }
-
-
-  onRenderQueueStop() {
-    if (this.calendar.updateViewSize()) { // success?
-      this.popScroll()
-    }
-    this.calendar.thawContentHeight()
-  }
-
-
-  startBatchRender() {
-    if (!(this.batchRenderDepth++)) {
-      this.renderQueue.pause()
-    }
-  }
-
-
-  stopBatchRender() {
-    if (!(--this.batchRenderDepth)) {
-      this.renderQueue.resume()
-    }
-  }
-
-
-  requestRender(func, namespace, actionType) {
-    this.renderQueue.queue(func, namespace, actionType)
-  }
-
-
-  // given func will auto-bind to `this`
-  whenSizeUpdated(func) {
-    if (this.renderQueue.isRunning) {
-      this.renderQueue.one('stop', func.bind(this))
-    } else {
-      func.call(this)
-    }
-  }
-
-
   /* Title and Date Formatting
   ------------------------------------------------------------------------------------------------------------------*/
 
 
   // Computes what the title at the top of the calendar should be for this view
   computeTitle(dateProfile) {
-    let unzonedRange
+    let dateEnv = this.getDateEnv()
+    let range: DateRange
 
     // for views that span a large unit of time, show the proper interval, ignoring stray days before and after
     if (/^(year|month)$/.test(dateProfile.currentRangeUnit)) {
-      unzonedRange = dateProfile.currentUnzonedRange
+      range = dateProfile.currentRange
     } else { // for day units or smaller, use the actual day range
-      unzonedRange = dateProfile.activeUnzonedRange
+      range = dateProfile.activeRange
     }
 
-    return this.formatRange(
-      {
-        start: this.calendar.msToMoment(unzonedRange.startMs, dateProfile.isRangeAllDay),
-        end: this.calendar.msToMoment(unzonedRange.endMs, dateProfile.isRangeAllDay)
-      },
-      dateProfile.isRangeAllDay,
-      this.opt('titleFormat') || this.computeTitleFormat(dateProfile),
-      this.opt('titleRangeSeparator')
+    return dateEnv.formatRange(
+      range.start,
+      range.end,
+      createFormatter(
+        this.opt('titleFormat') || this.computeTitleFormat(dateProfile),
+        this.opt('titleRangeSeparator')
+      ),
+      { isEndExclusive: dateProfile.isRangeAllDay }
     )
   }
 
@@ -185,13 +113,21 @@ export default abstract class View extends InteractiveDateComponent {
     let currentRangeUnit = dateProfile.currentRangeUnit
 
     if (currentRangeUnit === 'year') {
-      return 'YYYY'
+      return { year: 'numeric' }
     } else if (currentRangeUnit === 'month') {
-      return this.opt('monthYearFormat') // like "September 2014"
-    } else if (dateProfile.currentUnzonedRange.as('days') > 1) {
-      return 'll' // multi-day range. shorter, like "Sep 9 - 10 2014"
+      return { year: 'numeric', month: 'long' } // like "September 2014"
     } else {
-      return 'LL' // one day. longer, like "September 9 2014"
+      let days = diffWholeDays(
+        dateProfile.currentRange.start,
+        dateProfile.currentRange.end
+      )
+      if (days !== null && days > 1) {
+        // multi-day range. shorter, like "Sep 9 - 10 2014"
+        return { year: 'numeric', month: 'short', day: 'numeric' }
+      } else {
+        // one day. longer, like "September 9 2014"
+        return { year: 'numeric', month: 'long', day: 'numeric' }
+      }
     }
   }
 
@@ -200,206 +136,88 @@ export default abstract class View extends InteractiveDateComponent {
   // -----------------------------------------------------------------------------------------------------------------
 
 
-  setDate(date) {
-    let currentDateProfile = this.get('dateProfile')
-    let newDateProfile = this.dateProfileGenerator.build(date, undefined, true) // forceToValid=true
+  computeDateProfile(date: DateMarker): DateProfile {
+    let dateProfile = this.dateProfileGenerator.build(date, undefined, true) // forceToValid=true
 
-    if (
-      !currentDateProfile ||
-      !currentDateProfile.activeUnzonedRange.equals(newDateProfile.activeUnzonedRange)
+    if ( // reuse current reference if possible, for rendering optimization
+      this.dateProfile &&
+      rangesEqual(this.dateProfile.activeRange, dateProfile.activeRange)
     ) {
-      this.set('dateProfile', newDateProfile)
+      return this.dateProfile
     }
+
+    return dateProfile
   }
 
 
-  unsetDate() {
-    this.unset('dateProfile')
+  get activeStart(): Date {
+    return this.getDateEnv().toDate(this.dateProfile.activeRange.start)
+  }
+
+  get activeEnd(): Date {
+    return this.getDateEnv().toDate(this.dateProfile.activeRange.end)
+  }
+
+  get currentStart(): Date {
+    return this.getDateEnv().toDate(this.dateProfile.currentRange.start)
+  }
+
+  get currentEnd(): Date {
+    return this.getDateEnv().toDate(this.dateProfile.currentRange.end)
   }
 
 
-  // Event Data
+  // Skeleton Rendering
   // -----------------------------------------------------------------------------------------------------------------
 
 
-  fetchInitialEvents(dateProfile) {
-    let calendar = this.calendar
-    let forceAllDay = dateProfile.isRangeAllDay && !this.usesMinMaxTime
-
-    return calendar.requestEvents(
-      calendar.msToMoment(dateProfile.activeUnzonedRange.startMs, forceAllDay),
-      calendar.msToMoment(dateProfile.activeUnzonedRange.endMs, forceAllDay)
-    )
+  afterSkeletonRender() {
+    this.publiclyTriggerAfterSizing('viewSkeletonRender', [
+      {
+        view: this,
+        el: this.el
+      }
+    ])
   }
 
 
-  bindEventChanges() {
-    this.listenTo(this.calendar, 'eventsReset', this.resetEvents) // TODO: make this a real event
+  beforeSkeletonUnrender() {
+    this.publiclyTrigger('viewSkeletonDestroy', [
+      {
+        view: this,
+        el: this.el
+      }
+    ])
   }
 
 
-  unbindEventChanges() {
-    this.stopListeningTo(this.calendar, 'eventsReset')
-  }
-
-
-  setEvents(eventsPayload) {
-    this.set('currentEvents', eventsPayload)
-    this.set('hasEvents', true)
-  }
-
-
-  unsetEvents() {
-    this.unset('currentEvents')
-    this.unset('hasEvents')
-  }
-
-
-  resetEvents(eventsPayload) {
-    this.startBatchRender()
-    this.unsetEvents()
-    this.setEvents(eventsPayload)
-    this.stopBatchRender()
-  }
-
-
-  // Date High-level Rendering
+  // Date Rendering
   // -----------------------------------------------------------------------------------------------------------------
 
 
-  requestDateRender(dateProfile) {
-    this.requestRender(() => {
-      this.executeDateRender(dateProfile)
-    }, 'date', 'init')
-  }
-
-
-  requestDateUnrender() {
-    this.requestRender(() => {
-      this.executeDateUnrender()
-    }, 'date', 'destroy')
-  }
-
-
-  // if dateProfile not specified, uses current
-  executeDateRender(dateProfile) {
-    super.executeDateRender(dateProfile)
-
-    if (this['render']) {
-      this['render']() // TODO: deprecate
-    }
-
-    this.trigger('datesRendered')
+  afterDatesRender() {
+    this.title = this.computeTitle(this.dateProfile)
     this.addScroll({ isDateInit: true })
     this.startNowIndicator() // shouldn't render yet because updateSize will be called soon
+
+    this.publiclyTriggerAfterSizing('datesRender', [
+      {
+        view: this,
+        el: this.el
+      }
+    ])
   }
 
 
-  executeDateUnrender() {
-    this.unselect()
+  beforeDatesUnrender() {
+    this.publiclyTrigger('datesDestroy', [
+      {
+        view: this,
+        el: this.el
+      }
+    ])
+
     this.stopNowIndicator()
-    this.trigger('before:datesUnrendered')
-
-    if (this['destroy']) {
-      this['destroy']() // TODO: deprecate
-    }
-
-    super.executeDateUnrender()
-  }
-
-
-  // "Base" rendering
-  // -----------------------------------------------------------------------------------------------------------------
-
-
-  bindBaseRenderHandlers() {
-    this.on('datesRendered', () => {
-      this.whenSizeUpdated(
-        this.triggerViewRender
-      )
-    })
-
-    this.on('before:datesUnrendered', () => {
-      this.triggerViewDestroy()
-    })
-  }
-
-
-  triggerViewRender() {
-    this.publiclyTrigger('viewRender', {
-      context: this,
-      args: [ this, this.el ]
-    })
-  }
-
-
-  triggerViewDestroy() {
-    this.publiclyTrigger('viewDestroy', {
-      context: this,
-      args: [ this, this.el ]
-    })
-  }
-
-
-  // Event High-level Rendering
-  // -----------------------------------------------------------------------------------------------------------------
-
-
-  requestEventsRender(eventsPayload) {
-    this.requestRender(() => {
-      this.executeEventRender(eventsPayload)
-      this.whenSizeUpdated(
-        this.triggerAfterEventsRendered
-      )
-    }, 'event', 'init')
-  }
-
-
-  requestEventsUnrender() {
-    this.requestRender(() => {
-      this.triggerBeforeEventsDestroyed()
-      this.executeEventUnrender()
-    }, 'event', 'destroy')
-  }
-
-
-  // Business Hour High-level Rendering
-  // -----------------------------------------------------------------------------------------------------------------
-
-
-  requestBusinessHoursRender(businessHourGenerator) {
-    this.requestRender(() => {
-      this.renderBusinessHours(businessHourGenerator)
-    }, 'businessHours', 'init')
-  }
-
-  requestBusinessHoursUnrender() {
-    this.requestRender(() => {
-      this.unrenderBusinessHours()
-    }, 'businessHours', 'destroy')
-  }
-
-
-  // Misc view rendering utils
-  // -----------------------------------------------------------------------------------------------------------------
-
-
-  // Binds DOM handlers to elements that reside outside the view container, such as the document
-  bindGlobalHandlers() {
-    super.bindGlobalHandlers()
-
-    this.listenTo(GlobalEmitter.get(), {
-      touchstart: this.processUnselect,
-      mousedown: this.handleDocumentMousedown
-    })
-  }
-
-
-  // Unbinds DOM handlers from elements that reside outside the view container
-  unbindGlobalHandlers() {
-    super.unbindGlobalHandlers()
-
-    this.stopListeningTo(GlobalEmitter.get())
   }
 
 
@@ -411,6 +229,7 @@ export default abstract class View extends InteractiveDateComponent {
   // which is defined by this.getNowIndicatorUnit().
   // TODO: somehow do this for the current whole day's background too
   startNowIndicator() {
+    let dateEnv = this.getDateEnv()
     let unit
     let update
     let delay // ms wait value
@@ -418,18 +237,28 @@ export default abstract class View extends InteractiveDateComponent {
     if (this.opt('nowIndicator')) {
       unit = this.getNowIndicatorUnit()
       if (unit) {
-        update = proxy(this, 'updateNowIndicator') // bind to `this`
+        update = this.updateNowIndicator.bind(this)
 
         this.initialNowDate = this.calendar.getNow()
         this.initialNowQueriedMs = new Date().valueOf()
 
         // wait until the beginning of the next interval
-        delay = this.initialNowDate.clone().startOf(unit).add(1, unit).valueOf() - this.initialNowDate.valueOf()
+        delay = dateEnv.add(
+          dateEnv.startOf(this.initialNowDate, unit),
+          createDuration(1, unit)
+        ).valueOf() - this.initialNowDate.valueOf()
+
+        // TODO: maybe always use setTimeout, waiting until start of next unit
         this.nowIndicatorTimeoutID = setTimeout(() => {
           this.nowIndicatorTimeoutID = null
           update()
-          delay = +moment.duration(1, unit)
-          delay = Math.max(100, delay) // prevent too frequent
+
+          if (unit === 'second') {
+            delay = 1000 // every second
+          } else {
+            delay = 1000 * 60 // otherwise, every minute
+          }
+
           this.nowIndicatorIntervalID = setInterval(update, delay) // update every interval
         }, delay)
       }
@@ -443,12 +272,12 @@ export default abstract class View extends InteractiveDateComponent {
   // since the initial getNow call.
   updateNowIndicator() {
     if (
-      this.isDatesRendered &&
+      this.renderedFlags.dates &&
       this.initialNowDate // activated before?
     ) {
       this.unrenderNowIndicator() // won't unrender if unnecessary
       this.renderNowIndicator(
-        this.initialNowDate.clone().add(new Date().valueOf() - this.initialNowQueriedMs) // add ms
+        addMs(this.initialNowDate, new Date().valueOf() - this.initialNowQueriedMs)
       )
       this.isNowIndicatorRendered = true
     }
@@ -479,14 +308,8 @@ export default abstract class View extends InteractiveDateComponent {
   ------------------------------------------------------------------------------------------------------------------*/
 
 
-  updateSize(totalHeight, isAuto, isResize) {
-
-    if (this['setHeight']) { // for legacy API
-      this['setHeight'](totalHeight, isAuto)
-    } else {
-      super.updateSize(totalHeight, isAuto, isResize)
-    }
-
+  updateSize(totalHeight, isAuto, force) {
+    super.updateSize(totalHeight, isAuto, force)
     this.updateNowIndicator()
   }
 
@@ -498,7 +321,9 @@ export default abstract class View extends InteractiveDateComponent {
   addScroll(scroll) {
     let queuedScroll = this.queuedScroll || (this.queuedScroll = {})
 
-    $.extend(queuedScroll, scroll)
+    if (!queuedScroll.isLocked) {
+      assignTo(queuedScroll, scroll)
+    }
   }
 
 
@@ -509,17 +334,15 @@ export default abstract class View extends InteractiveDateComponent {
 
 
   applyQueuedScroll() {
-    if (this.queuedScroll) {
-      this.applyScroll(this.queuedScroll)
-    }
+    this.applyScroll(this.queuedScroll || {})
   }
 
 
   queryScroll() {
-    let scroll = {}
+    let scroll = {} as any
 
-    if (this.isDatesRendered) {
-      $.extend(scroll, this.queryDateScroll())
+    if (this.renderedFlags.dates) {
+      assignTo(scroll, this.queryDateScroll())
     }
 
     return scroll
@@ -527,11 +350,20 @@ export default abstract class View extends InteractiveDateComponent {
 
 
   applyScroll(scroll) {
-    if (scroll.isDateInit && this.isDatesRendered) {
-      $.extend(scroll, this.computeInitialDateScroll())
+
+    if (scroll.isLocked) {
+      delete scroll.isLocked
     }
 
-    if (this.isDatesRendered) {
+    if (scroll.isDateInit) {
+      delete scroll.isDateInit
+
+      if (this.renderedFlags.dates) {
+        assignTo(scroll, this.computeInitialDateScroll())
+      }
+    }
+
+    if (this.renderedFlags.dates) {
       this.applyDateScroll(scroll)
     }
   }
@@ -552,329 +384,12 @@ export default abstract class View extends InteractiveDateComponent {
   }
 
 
-  /* Event Drag-n-Drop
-  ------------------------------------------------------------------------------------------------------------------*/
-
-
-  reportEventDrop(eventInstance, eventMutation, el, ev) {
-    let eventManager = this.calendar.eventManager
-    let undoFunc = eventManager.mutateEventsWithId(
-      eventInstance.def.id,
-      eventMutation
-    )
-    let dateMutation = eventMutation.dateMutation
-
-    // update the EventInstance, for handlers
-    if (dateMutation) {
-      eventInstance.dateProfile = dateMutation.buildNewDateProfile(
-        eventInstance.dateProfile,
-        this.calendar
-      )
-    }
-
-    this.triggerEventDrop(
-      eventInstance,
-      // a drop doesn't necessarily mean a date mutation (ex: resource change)
-      (dateMutation && dateMutation.dateDelta) || moment.duration(),
-      undoFunc,
-      el, ev
-    )
-  }
-
-
-  // Triggers event-drop handlers that have subscribed via the API
-  triggerEventDrop(eventInstance, dateDelta, undoFunc, el, ev) {
-    this.publiclyTrigger('eventDrop', {
-      context: el[0],
-      args: [
-        eventInstance.toLegacy(),
-        dateDelta,
-        undoFunc,
-        ev,
-        {}, // {} = jqui dummy
-        this
-      ]
-    })
-  }
-
-
-  /* External Element Drag-n-Drop
-  ------------------------------------------------------------------------------------------------------------------*/
-
-
-  // Must be called when an external element, via jQuery UI, has been dropped onto the calendar.
-  // `meta` is the parsed data that has been embedded into the dragging event.
-  // `dropLocation` is an object that contains the new zoned start/end/allDay values for the event.
-  reportExternalDrop(singleEventDef, isEvent, isSticky, el, ev, ui) {
-
-    if (isEvent) {
-      this.calendar.eventManager.addEventDef(singleEventDef, isSticky)
-    }
-
-    this.triggerExternalDrop(singleEventDef, isEvent, el, ev, ui)
-  }
-
-
-  // Triggers external-drop handlers that have subscribed via the API
-  triggerExternalDrop(singleEventDef, isEvent, el, ev, ui) {
-
-    // trigger 'drop' regardless of whether element represents an event
-    this.publiclyTrigger('drop', {
-      context: el[0],
-      args: [
-        singleEventDef.dateProfile.start.clone(),
-        ev,
-        ui,
-        this
-      ]
-    })
-
-    if (isEvent) {
-      // signal an external event landed
-      this.publiclyTrigger('eventReceive', {
-        context: this,
-        args: [
-          singleEventDef.buildInstance().toLegacy(),
-          this
-        ]
-      })
-    }
-  }
-
-
-  /* Event Resizing
-  ------------------------------------------------------------------------------------------------------------------*/
-
-
-  // Must be called when an event in the view has been resized to a new length
-  reportEventResize(eventInstance, eventMutation, el, ev) {
-    let eventManager = this.calendar.eventManager
-    let undoFunc = eventManager.mutateEventsWithId(
-      eventInstance.def.id,
-      eventMutation
-    )
-
-    // update the EventInstance, for handlers
-    eventInstance.dateProfile = eventMutation.dateMutation.buildNewDateProfile(
-      eventInstance.dateProfile,
-      this.calendar
-    )
-
-    this.triggerEventResize(
-      eventInstance,
-      eventMutation.dateMutation.endDelta,
-      undoFunc,
-      el, ev
-    )
-  }
-
-
-  // Triggers event-resize handlers that have subscribed via the API
-  triggerEventResize(eventInstance, durationDelta, undoFunc, el, ev) {
-    this.publiclyTrigger('eventResize', {
-      context: el[0],
-      args: [
-        eventInstance.toLegacy(),
-        durationDelta,
-        undoFunc,
-        ev,
-        {}, // {} = jqui dummy
-        this
-      ]
-    })
-  }
-
-
-  /* Selection (time range)
-  ------------------------------------------------------------------------------------------------------------------*/
-
-
-  // Selects a date span on the view. `start` and `end` are both Moments.
-  // `ev` is the native mouse event that begin the interaction.
-  select(footprint, ev?) {
-    this.unselect(ev)
-    this.renderSelectionFootprint(footprint)
-    this.reportSelection(footprint, ev)
-  }
-
-
-  renderSelectionFootprint(footprint) {
-    if (this['renderSelection']) { // legacy method in custom view classes
-      this['renderSelection'](
-        footprint.toLegacy(this.calendar)
-      )
-    } else {
-      super.renderSelectionFootprint(footprint)
-    }
-  }
-
-
-  // Called when a new selection is made. Updates internal state and triggers handlers.
-  reportSelection(footprint, ev?) {
-    this.isSelected = true
-    this.triggerSelect(footprint, ev)
-  }
-
-
-  // Triggers handlers to 'select'
-  triggerSelect(footprint, ev?) {
-    let dateProfile = this.calendar.footprintToDateProfile(footprint) // abuse of "Event"DateProfile?
-
-    this.publiclyTrigger('select', {
-      context: this,
-      args: [
-        dateProfile.start,
-        dateProfile.end,
-        ev,
-        this
-      ]
-    })
-  }
-
-
-  // Undoes a selection. updates in the internal state and triggers handlers.
-  // `ev` is the native mouse event that began the interaction.
-  unselect(ev?) {
-    if (this.isSelected) {
-      this.isSelected = false
-      if (this['destroySelection']) {
-        this['destroySelection']() // TODO: deprecate
-      }
-      this.unrenderSelection()
-      this.publiclyTrigger('unselect', {
-        context: this,
-        args: [ ev, this ]
-      })
-    }
-  }
-
-
-  /* Event Selection
-  ------------------------------------------------------------------------------------------------------------------*/
-
-
-  selectEventInstance(eventInstance) {
-    if (
-      !this.selectedEventInstance ||
-      this.selectedEventInstance !== eventInstance
-    ) {
-      this.unselectEventInstance()
-
-      this.getEventSegs().forEach(function(seg) {
-        if (
-          seg.footprint.eventInstance === eventInstance &&
-          seg.el // necessary?
-        ) {
-          seg.el.addClass('fc-selected')
-        }
-      })
-
-      this.selectedEventInstance = eventInstance
-    }
-  }
-
-
-  unselectEventInstance() {
-    if (this.selectedEventInstance) {
-
-      this.getEventSegs().forEach(function(seg) {
-        if (seg.el) { // necessary?
-          seg.el.removeClass('fc-selected')
-        }
-      })
-
-      this.selectedEventInstance = null
-    }
-  }
-
-
-  isEventDefSelected(eventDef) {
-    // event references might change on refetchEvents(), while selectedEventInstance doesn't,
-    // so compare IDs
-    return this.selectedEventInstance && this.selectedEventInstance.def.id === eventDef.id
-  }
-
-
-  /* Mouse / Touch Unselecting (time range & event unselection)
-  ------------------------------------------------------------------------------------------------------------------*/
-  // TODO: move consistently to down/start or up/end?
-  // TODO: don't kill previous selection if touch scrolling
-
-
-  handleDocumentMousedown(ev) {
-    if (isPrimaryMouseButton(ev)) {
-      this.processUnselect(ev)
-    }
-  }
-
-
-  processUnselect(ev) {
-    this.processRangeUnselect(ev)
-    this.processEventUnselect(ev)
-  }
-
-
-  processRangeUnselect(ev) {
-    let ignore
-
-    // is there a time-range selection?
-    if (this.isSelected && this.opt('unselectAuto')) {
-      // only unselect if the clicked element is not identical to or inside of an 'unselectCancel' element
-      ignore = this.opt('unselectCancel')
-      if (!ignore || !$(ev.target).closest(ignore).length) {
-        this.unselect(ev)
-      }
-    }
-  }
-
-
-  processEventUnselect(ev) {
-    if (this.selectedEventInstance) {
-      if (!$(ev.target).closest('.fc-selected').length) {
-        this.unselectEventInstance()
-      }
-    }
-  }
-
-
-  /* Triggers
-  ------------------------------------------------------------------------------------------------------------------*/
-
-
-  triggerBaseRendered() {
-    this.publiclyTrigger('viewRender', {
-      context: this,
-      args: [ this, this.el ]
-    })
-  }
-
-
-  triggerBaseUnrendered() {
-    this.publiclyTrigger('viewDestroy', {
-      context: this,
-      args: [ this, this.el ]
-    })
-  }
-
-
-  // Triggers handlers to 'dayClick'
-  // Span has start/end of the clicked area. Only the start is useful.
-  triggerDayClick(footprint, dayEl, ev) {
-    let dateProfile = this.calendar.footprintToDateProfile(footprint) // abuse of "Event"DateProfile?
-
-    this.publiclyTrigger('dayClick', {
-      context: dayEl,
-      args: [ dateProfile.start, ev, this ]
-    })
-  }
-
-
   /* Date Utils
   ------------------------------------------------------------------------------------------------------------------*/
 
 
   // For DateComponent::getDayClasses
-  isDateInOtherMonth(date, dateProfile) {
+  isDateInOtherMonth(date: DateMarker, dateProfile) {
     return false
   }
 
@@ -882,18 +397,15 @@ export default abstract class View extends InteractiveDateComponent {
   // Arguments after name will be forwarded to a hypothetical function value
   // WARNING: passed-in arguments will be given to generator functions as-is and can cause side-effects.
   // Always clone your objects if you fear mutation.
-  getUnzonedRangeOption(name) {
+  getRangeOption(name, ...otherArgs): OpenDateRange {
     let val = this.opt(name)
 
     if (typeof val === 'function') {
-      val = val.apply(
-        null,
-        Array.prototype.slice.call(arguments, 1)
-      )
+      val = val.apply(null, otherArgs)
     }
 
     if (val) {
-      return this.calendar.parseUnzonedRange(val)
+      return parseRange(val, this.calendar.dateEnv)
     }
   }
 
@@ -915,7 +427,7 @@ export default abstract class View extends InteractiveDateComponent {
 
     for (i = 0; i < 7; i++) {
       if (
-        !(isHiddenDayHash[i] = $.inArray(i, hiddenDays) !== -1)
+        !(isHiddenDayHash[i] = hiddenDays.indexOf(i) !== -1)
       ) {
         dayCnt++
       }
@@ -931,9 +443,9 @@ export default abstract class View extends InteractiveDateComponent {
 
   // Remove days from the beginning and end of the range that are computed as hidden.
   // If the whole range is trimmed off, returns null
-  trimHiddenDays(inputUnzonedRange) {
-    let start = inputUnzonedRange.getStart()
-    let end = inputUnzonedRange.getEnd()
+  trimHiddenDays(range: DateRange): DateRange | null {
+    let start = range.start
+    let end = range.end
 
     if (start) {
       start = this.skipHiddenDays(start)
@@ -943,91 +455,41 @@ export default abstract class View extends InteractiveDateComponent {
       end = this.skipHiddenDays(end, -1, true)
     }
 
-    if (start === null || end === null || start < end) {
-      return new UnzonedRange(start, end)
+    if (start == null || end == null || start < end) {
+      return { start, end }
     }
+
     return null
   }
 
 
   // Is the current day hidden?
-  // `day` is a day-of-week index (0-6), or a Moment
+  // `day` is a day-of-week index (0-6), or a Date (used for UTC)
   isHiddenDay(day) {
-    if (moment.isMoment(day)) {
-      day = day.day()
+    if (day instanceof Date) {
+      day = day.getUTCDay()
     }
     return this.isHiddenDayHash[day]
   }
 
 
   // Incrementing the current day until it is no longer a hidden day, returning a copy.
-  // DOES NOT CONSIDER validUnzonedRange!
+  // DOES NOT CONSIDER validRange!
   // If the initial value of `date` is not a hidden day, don't do anything.
   // Pass `isExclusive` as `true` if you are dealing with an end date.
   // `inc` defaults to `1` (increment one day forward each time)
-  skipHiddenDays(date, inc= 1, isExclusive= false) {
-    let out = date.clone()
+  skipHiddenDays(date: DateMarker, inc = 1, isExclusive = false) {
     while (
-      this.isHiddenDayHash[(out.day() + (isExclusive ? inc : 0) + 7) % 7]
+      this.isHiddenDayHash[(date.getUTCDay() + (isExclusive ? inc : 0) + 7) % 7]
     ) {
-      out.add(inc, 'days')
+      date = addDays(date, inc)
     }
-    return out
+    return date
   }
 
 }
 
+EmitterMixin.mixInto(View)
+
 View.prototype.usesMinMaxTime = false
 View.prototype.dateProfileGeneratorClass = DateProfileGenerator
-
-
-View.watch('displayingDates', [ 'isInDom', 'dateProfile' ], function(deps) {
-  this.requestDateRender(deps.dateProfile)
-}, function() {
-  this.requestDateUnrender()
-})
-
-
-View.watch('displayingBusinessHours', [ 'displayingDates', 'businessHourGenerator' ], function(deps) {
-  this.requestBusinessHoursRender(deps.businessHourGenerator)
-}, function() {
-  this.requestBusinessHoursUnrender()
-})
-
-
-View.watch('initialEvents', [ 'dateProfile' ], function(deps) {
-  return this.fetchInitialEvents(deps.dateProfile)
-})
-
-
-View.watch('bindingEvents', [ 'initialEvents' ], function(deps) {
-  this.setEvents(deps.initialEvents)
-  this.bindEventChanges()
-}, function() {
-  this.unbindEventChanges()
-  this.unsetEvents()
-})
-
-
-View.watch('displayingEvents', [ 'displayingDates', 'hasEvents' ], function() {
-  this.requestEventsRender(this.get('currentEvents'))
-}, function() {
-  this.requestEventsUnrender()
-})
-
-
-View.watch('title', [ 'dateProfile' ], function(deps) {
-  return (this.title = this.computeTitle(deps.dateProfile)) // assign to View for legacy reasons
-})
-
-
-View.watch('legacyDateProps', [ 'dateProfile' ], function(deps) {
-  let calendar = this.calendar
-  let dateProfile = deps.dateProfile
-
-  // DEPRECATED, but we need to keep it updated...
-  this.start = calendar.msToMoment(dateProfile.activeUnzonedRange.startMs, dateProfile.isRangeAllDay)
-  this.end = calendar.msToMoment(dateProfile.activeUnzonedRange.endMs, dateProfile.isRangeAllDay)
-  this.intervalStart = calendar.msToMoment(dateProfile.currentUnzonedRange.startMs, dateProfile.isRangeAllDay)
-  this.intervalEnd = calendar.msToMoment(dateProfile.currentUnzonedRange.endMs, dateProfile.isRangeAllDay)
-})

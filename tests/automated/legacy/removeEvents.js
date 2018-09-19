@@ -34,26 +34,28 @@ describe('removeEvents', function() {
         go(
           eventGenerator(),
           function() {
-            currentCalendar.removeEvents()
+            currentCalendar.removeAllEvents()
           },
           function() {
-            expect(currentCalendar.clientEvents().length).toEqual(0)
+            expect(currentCalendar.getEvents().length).toEqual(0)
             expect($('.fc-event').length).toEqual(0)
           },
           done
         )
       })
 
-      it('can remove events with a filter function', function(done) {
+      it('can remove events individually', function(done) {
         go(
           eventGenerator(),
           function() {
-            currentCalendar.removeEvents(function(event) {
-              return $.inArray('event-one', event.className) !== -1
+            currentCalendar.getEvents().forEach(function(event) {
+              if ($.inArray('event-one', event.classNames) !== -1) {
+                event.remove()
+              }
             })
           },
           function() {
-            expect(currentCalendar.clientEvents().length).toEqual(2)
+            expect(currentCalendar.getEvents().length).toEqual(2)
             expect($('.fc-event').length).toEqual(2)
             expect($('.event-zero').length).toEqual(1)
             expect($('.event-two').length).toEqual(1)
@@ -69,10 +71,10 @@ describe('removeEvents', function() {
     go(
       buildEventsWithIds(),
       function() {
-        currentCalendar.removeEvents(1)
+        currentCalendar.getEventById(1).remove()
       },
       function() {
-        expect(currentCalendar.clientEvents().length).toEqual(2)
+        expect(currentCalendar.getEvents().length).toEqual(2)
         expect($('.fc-event').length).toEqual(2)
         expect($('.event-zero').length).toEqual(1)
         expect($('.event-two').length).toEqual(1)
@@ -85,10 +87,10 @@ describe('removeEvents', function() {
     go(
       buildEventsWithIds(),
       function() {
-        currentCalendar.removeEvents('1')
+        currentCalendar.getEventById('1').remove()
       },
       function() {
-        expect(currentCalendar.clientEvents().length).toEqual(2)
+        expect(currentCalendar.getEvents().length).toEqual(2)
         expect($('.fc-event').length).toEqual(2)
         expect($('.event-zero').length).toEqual(1)
         expect($('.event-two').length).toEqual(1)
@@ -101,10 +103,10 @@ describe('removeEvents', function() {
     go(
       buildEventsWithIds(),
       function() {
-        currentCalendar.removeEvents(0)
+        currentCalendar.getEventById(0).remove()
       },
       function() {
-        expect(currentCalendar.clientEvents().length).toEqual(2)
+        expect(currentCalendar.getEvents().length).toEqual(2)
         expect($('.fc-event').length).toEqual(2)
         expect($('.event-zero').length).toEqual(0)
         expect($('.event-non-zero').length).toEqual(2)
@@ -113,29 +115,12 @@ describe('removeEvents', function() {
     )
   })
 
-  it('can remove an event with an internal _id', function() {
-    var event
-
-    initCalendar({
-      defaultDate: '2014-06-24',
-      events: [ { title: 'event0', start: '2014-06-24' } ]
-    })
-
-    event = currentCalendar.clientEvents()[0]
-    expect(typeof event).toBe('object')
-
-    currentCalendar.removeEvents(event._id)
-    expect(
-      currentCalendar.clientEvents().length
-    ).toBe(0)
-  })
-
   // Verifies the actions in removeFunc executed correctly by calling checkFunc.
   function go(events, removeFunc, checkFunc, doneFunc) {
     var called = false
     initCalendar({
       events: events,
-      eventAfterAllRender: function() {
+      _eventsPositioned: function() {
         if (!called) { // don't execute on subsequent removeEvents/next/prev
           called = true
 
@@ -169,7 +154,7 @@ describe('removeEvents', function() {
   // Checks to make sure all events have been rendered and that the calendar
   // has internal info on all the events.
   function checkAllEvents() {
-    expect(currentCalendar.clientEvents().length).toEqual(3)
+    expect(currentCalendar.getEvents().length).toEqual(3)
     expect($('.fc-event').length).toEqual(3)
   }
 

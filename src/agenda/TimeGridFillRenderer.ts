@@ -1,9 +1,10 @@
 import FillRenderer from '../component/renderers/FillRenderer'
+import { Seg } from '../component/DateComponent'
 
 
 export default class TimeGridFillRenderer extends FillRenderer {
 
-  attachSegEls(type, segs) {
+  attachSegEls(type, segs: Seg[]) {
     let timeGrid = this.component
     let containerEls
 
@@ -16,12 +17,19 @@ export default class TimeGridFillRenderer extends FillRenderer {
       containerEls = timeGrid.highlightContainerEls
     }
 
-    timeGrid.updateSegVerticals(segs)
     timeGrid.attachSegsByCol(timeGrid.groupSegsByCol(segs), containerEls)
 
     return segs.map(function(seg) {
-      return seg.el[0]
+      return seg.el
     })
+  }
+
+  computeSize(type) {
+    this.component.computeSegVerticals(this.renderedSegsByType[type] || [])
+  }
+
+  assignSize(type) {
+    this.component.assignSegVerticals(this.renderedSegsByType[type] || [])
   }
 
 }

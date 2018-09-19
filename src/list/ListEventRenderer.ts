@@ -1,9 +1,15 @@
-import { htmlEscape } from '../util'
+import { htmlEscape } from '../util/html'
 import EventRenderer from '../component/renderers/EventRenderer'
+import ListView from './ListView'
+import { Seg } from '../component/DateComponent'
+import { isMultiDayRange } from '../util/misc'
 
 export default class ListEventRenderer extends EventRenderer {
 
-  renderFgSegs(segs) {
+  component: ListView
+
+
+  renderFgSegs(segs: Seg[]) {
     if (!segs.length) {
       this.component.renderEmptyMessage()
     } else {
@@ -12,33 +18,40 @@ export default class ListEventRenderer extends EventRenderer {
   }
 
   // generates the HTML for a single event row
-  fgSegHtml(seg) {
+  fgSegHtml(seg: Seg) {
     let view = this.view
     let calendar = view.calendar
     let theme = calendar.theme
-    let eventFootprint = seg.footprint
-    let eventDef = eventFootprint.eventDef
-    let componentFootprint = eventFootprint.componentFootprint
+    let eventRange = seg.eventRange
+    let eventDef = eventRange.def
+    let eventInstance = eventRange.instance
+    let eventUi = eventRange.ui
     let url = eventDef.url
-    let classes = [ 'fc-list-item' ].concat(this.getClasses(eventDef))
-    let bgColor = this.getBgColor(eventDef)
+    let classes = [ 'fc-list-item' ].concat(eventUi.classNames)
+    let bgColor = eventUi.backgroundColor
     let timeHtml
 
-    if (componentFootprint.isAllDay) {
+    if (eventDef.isAllDay) {
       timeHtml = view.getAllDayHtml()
-    } else if (view.isMultiDayRange(componentFootprint.unzonedRange)) {
-      if (seg.isStart || seg.isEnd) { // outer segment that probably lasts part of the day
+    } else if (isMultiDayRange(eventRange.range)) {
+      if (seg.isStart) {
         timeHtml = htmlEscape(this._getTimeText(
-          calendar.msToMoment(seg.startMs),
-          calendar.msToMoment(seg.endMs),
-          componentFootprint.isAllDay
+          eventInstance.range.start,
+          seg.end,
+          false // isAllDay
+        ))
+      } else if (seg.isEnd) {
+        timeHtml = htmlEscape(this._getTimeText(
+          seg.start,
+          eventInstance.range.end,
+          false // isAllDay
         ))
       } else { // inner segment that lasts the whole day
         timeHtml = view.getAllDayHtml()
       }
     } else {
       // Display the normal time text for the *event's* times
-      timeHtml = htmlEscape(this.getTimeText(eventFootprint))
+      timeHtml = htmlEscape(this.getTimeText(eventRange))
     }
 
     if (url) {
@@ -69,7 +82,11 @@ export default class ListEventRenderer extends EventRenderer {
 
   // like "4:00am"
   computeEventTimeFormat() {
-    return this.opt('mediumTimeFormat')
+    return {
+      hour: 'numeric',
+      minute: '2-digit',
+      meridiem: 'short'
+    }
   }
 
 }

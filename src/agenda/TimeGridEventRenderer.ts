@@ -1,5 +1,9 @@
-import { htmlEscape, cssToStr, proxy } from '../util'
-import EventRenderer from '../component/renderers/EventRenderer'
+import { htmlEscape, cssToStr } from '../util/html'
+import { removeElement, applyStyle } from '../util/dom-manip'
+import { createFormatter, DateFormatter } from '../datelib/formatting'
+import EventRenderer, { buildSegCompareObj } from '../component/renderers/EventRenderer'
+import { Seg } from '../component/DateComponent'
+import { isMultiDayRange, compareByFieldSpecs } from '../util/misc'
 
 /*
 Only handles foreground segs.
@@ -8,47 +12,77 @@ Does not own rendering. Use for low-level util methods by TimeGrid.
 export default class TimeGridEventRenderer extends EventRenderer {
 
   timeGrid: any
+  segsByCol: any
+  fullTimeFormat: DateFormatter
 
 
   constructor(timeGrid, fillRenderer) {
     super(timeGrid, fillRenderer)
     this.timeGrid = timeGrid
+
+    this.fullTimeFormat = createFormatter({
+      hour: 'numeric',
+      minute: '2-digit',
+      separator: this.opt('defaultRangeSeparator')
+    })
   }
 
 
-  renderFgSegs(segs) {
+  renderFgSegs(segs: Seg[]) {
     this.renderFgSegsIntoContainers(segs, this.timeGrid.fgContainerEls)
   }
 
 
   // Given an array of foreground segments, render a DOM element for each, computes position,
   // and attaches to the column inner-container elements.
-  renderFgSegsIntoContainers(segs, containerEls) {
-    let segsByCol
-    let col
-
-    segsByCol = this.timeGrid.groupSegsByCol(segs)
-
-    for (col = 0; col < this.timeGrid.colCnt; col++) {
-      this.updateFgSegCoords(segsByCol[col])
-    }
-
-    this.timeGrid.attachSegsByCol(segsByCol, containerEls)
+  renderFgSegsIntoContainers(segs: Seg[], containerEls) {
+    this.segsByCol = this.timeGrid.groupSegsByCol(segs)
+    this.timeGrid.attachSegsByCol(this.segsByCol, containerEls)
   }
 
 
   unrenderFgSegs() {
     if (this.fgSegs) { // hack
       this.fgSegs.forEach(function(seg) {
-        seg.el.remove()
+        removeElement(seg.el)
       })
+    }
+
+    this.segsByCol = null
+  }
+
+
+  computeFgSize() {
+    let { timeGrid } = this
+
+    for (let col = 0; col < timeGrid.colCnt; col++) {
+      let segs = this.segsByCol[col]
+
+      timeGrid.computeSegVerticals(segs) // horizontals relies on this
+      this.computeFgSegHorizontals(segs) // compute horizontal coordinates, z-index's, and reorder the array
     }
   }
 
 
-  // Computes a default event time formatting string if `timeFormat` is not explicitly defined
+  assignFgSize() {
+    let { timeGrid } = this
+
+    for (let col = 0; col < timeGrid.colCnt; col++) {
+      let segs = this.segsByCol[col]
+
+      timeGrid.assignSegVerticals(segs)
+      this.assignFgSegHorizontals(segs)
+    }
+  }
+
+
+  // Computes a default event time formatting string if `eventTimeFormat` is not explicitly defined
   computeEventTimeFormat() {
-    return this.opt('noMeridiemTimeFormat') // like "6:30" (no AM/PM)
+    return {
+      hour: 'numeric',
+      minute: '2-digit',
+      meridiem: false
+    }
   }
 
 
@@ -59,17 +93,16 @@ export default class TimeGridEventRenderer extends EventRenderer {
 
 
   // Renders the HTML for a single event segment's default rendering
-  fgSegHtml(seg, disableResizing) {
-    let view = this.view
-    let calendar = view.calendar
-    let componentFootprint = seg.footprint.componentFootprint
-    let isAllDay = componentFootprint.isAllDay
-    let eventDef = seg.footprint.eventDef
-    let isDraggable = view.isEventDefDraggable(eventDef)
-    let isResizableFromStart = !disableResizing && seg.isStart && view.isEventDefResizableFromStart(eventDef)
-    let isResizableFromEnd = !disableResizing && seg.isEnd && view.isEventDefResizableFromEnd(eventDef)
+  fgSegHtml(seg: Seg) {
+    let eventRange = seg.eventRange
+    let eventDef = eventRange.def
+    let eventUi = eventRange.ui
+    let isAllDay = eventDef.isAllDay
+    let isDraggable = eventUi.startEditable
+    let isResizableFromStart = seg.isStart && eventUi.durationEditable && this.opt('eventResizableFromStart')
+    let isResizableFromEnd = seg.isEnd && eventUi.durationEditable
     let classes = this.getSegClasses(seg, isDraggable, isResizableFromStart || isResizableFromEnd)
-    let skinCss = cssToStr(this.getSkinCss(eventDef))
+    let skinCss = cssToStr(this.getSkinCss(eventUi))
     let timeText
     let fullTimeText // more verbose time text. for the print stylesheet
     let startTimeText // just the start time text
@@ -77,22 +110,22 @@ export default class TimeGridEventRenderer extends EventRenderer {
     classes.unshift('fc-time-grid-event', 'fc-v-event')
 
     // if the event appears to span more than one day...
-    if (view.isMultiDayRange(componentFootprint.unzonedRange)) {
+    if (isMultiDayRange(eventRange.range)) {
       // Don't display time text on segments that run entirely through a day.
       // That would appear as midnight-midnight and would look dumb.
       // Otherwise, display the time text for the *segment's* times (like 6pm-midnight or midnight-10am)
       if (seg.isStart || seg.isEnd) {
-        let zonedStart = calendar.msToMoment(seg.startMs)
-        let zonedEnd = calendar.msToMoment(seg.endMs)
-        timeText = this._getTimeText(zonedStart, zonedEnd, isAllDay)
-        fullTimeText = this._getTimeText(zonedStart, zonedEnd, isAllDay, 'LT')
-        startTimeText = this._getTimeText(zonedStart, zonedEnd, isAllDay, null, false) // displayEnd=false
+        let unzonedStart = seg.start
+        let unzonedEnd = seg.end
+        timeText = this._getTimeText(unzonedStart, unzonedEnd, isAllDay) // TODO: give the timezones
+        fullTimeText = this._getTimeText(unzonedStart, unzonedEnd, isAllDay, this.fullTimeFormat)
+        startTimeText = this._getTimeText(unzonedStart, unzonedEnd, isAllDay, null, false) // displayEnd=false
       }
     } else {
       // Display the normal time text for the *event's* times
-      timeText = this.getTimeText(seg.footprint)
-      fullTimeText = this.getTimeText(seg.footprint, 'LT')
-      startTimeText = this.getTimeText(seg.footprint, null, false) // displayEnd=false
+      timeText = this.getTimeText(eventRange)
+      fullTimeText = this.getTimeText(eventRange, this.fullTimeFormat)
+      startTimeText = this.getTimeText(eventRange, null, false) // displayEnd=false
     }
 
     return '<a class="' + classes.join(' ') + '"' +
@@ -122,39 +155,29 @@ export default class TimeGridEventRenderer extends EventRenderer {
             ''
             ) +
         '</div>' +
-        '<div class="fc-bg"/>' +
+        '<div class="fc-bg"></div>' +
         /* TODO: write CSS for this
         (isResizableFromStart ?
-          '<div class="fc-resizer fc-start-resizer" />' :
+          '<div class="fc-resizer fc-start-resizer"></div>' :
           ''
           ) +
         */
         (isResizableFromEnd ?
-          '<div class="fc-resizer fc-end-resizer" />' :
+          '<div class="fc-resizer fc-end-resizer"></div>' :
           ''
           ) +
       '</a>'
   }
 
 
-  // Given segments that are assumed to all live in the *same column*,
-  // compute their verical/horizontal coordinates and assign to their elements.
-  updateFgSegCoords(segs) {
-    this.timeGrid.computeSegVerticals(segs) // horizontals relies on this
-    this.computeFgSegHorizontals(segs) // compute horizontal coordinates, z-index's, and reorder the array
-    this.timeGrid.assignSegVerticals(segs)
-    this.assignFgSegHorizontals(segs)
-  }
-
-
   // Given an array of segments that are all in the same column, sets the backwardCoord and forwardCoord on each.
   // NOTE: Also reorders the given array by date!
-  computeFgSegHorizontals(segs) {
+  computeFgSegHorizontals(segs: Seg[]) {
     let levels
     let level0
     let i
 
-    this.sortEventSegs(segs) // order by certain criteria
+    segs = this.sortEventSegs(segs) // order by certain criteria
     levels = buildSlotSegLevels(segs)
     computeForwardSlotSegs(levels)
 
@@ -179,7 +202,7 @@ export default class TimeGridEventRenderer extends EventRenderer {
   // who's width is unknown until an edge has been hit. `seriesBackwardPressure` is the number of
   // segments behind this one in the current series, and `seriesBackwardCoord` is the starting
   // coordinate of the first segment in the series.
-  computeFgSegForwardBack(seg, seriesBackwardPressure, seriesBackwardCoord) {
+  computeFgSegForwardBack(seg: Seg, seriesBackwardPressure, seriesBackwardCoord) {
     let forwardSegs = seg.forwardSegs
     let i
 
@@ -214,35 +237,41 @@ export default class TimeGridEventRenderer extends EventRenderer {
   }
 
 
-  sortForwardSegs(forwardSegs) {
-    forwardSegs.sort(proxy(this, 'compareForwardSegs'))
-  }
+  sortForwardSegs(forwardSegs: Seg[]) {
+    let objs = forwardSegs.map(buildTimeGridSegCompareObj)
 
-
-  // A cmp function for determining which forward segment to rely on more when computing coordinates.
-  compareForwardSegs(seg1, seg2) {
-    // put higher-pressure first
-    return seg2.forwardPressure - seg1.forwardPressure ||
+    let specs = [
+      // put higher-pressure first
+      { field: 'forwardPressure', order: -1 },
       // put segments that are closer to initial edge first (and favor ones with no coords yet)
-      (seg1.backwardCoord || 0) - (seg2.backwardCoord || 0) ||
-      // do normal sorting...
-      this.compareEventSegs(seg1, seg2)
+      { field: 'backwardCoord', order: 1 }
+    ].concat(
+      this.view.eventOrderSpecs
+    )
+
+    objs.sort(function(obj0, obj1) {
+      return compareByFieldSpecs(obj0, obj1, specs)
+    })
+
+    return objs.map(function(c) {
+      return c._seg
+    })
   }
 
 
   // Given foreground event segments that have already had their position coordinates computed,
   // assigns position-related CSS values to their elements.
-  assignFgSegHorizontals(segs) {
+  assignFgSegHorizontals(segs: Seg[]) {
     let i
     let seg
 
     for (i = 0; i < segs.length; i++) {
       seg = segs[i]
-      seg.el.css(this.generateFgSegHorizontalCss(seg))
+      applyStyle(seg.el, this.generateFgSegHorizontalCss(seg))
 
       // if the height is short, add a className for alternate styling
       if (seg.bottom - seg.top < 30) {
-        seg.el.addClass('fc-short')
+        seg.el.classList.add('fc-short')
       }
     }
   }
@@ -250,12 +279,12 @@ export default class TimeGridEventRenderer extends EventRenderer {
 
   // Generates an object with CSS properties/values that should be applied to an event segment element.
   // Contains important positioning-related properties that should be applied to any event element, customized or not.
-  generateFgSegHorizontalCss(seg) {
+  generateFgSegHorizontalCss(seg: Seg) {
     let shouldOverlap = this.opt('slotEventOverlap')
     let backwardCoord = seg.backwardCoord // the left side if LTR. the right side if RTL. floating-point
     let forwardCoord = seg.forwardCoord // the right side if LTR. the left side if RTL. floating-point
     let props = this.timeGrid.generateSegVerticalCss(seg) // get top/bottom first
-    let isRTL = this.timeGrid.isRTL
+    let isRtl = this.timeGrid.isRtl
     let left // amount of space from left edge, a fraction of the total width
     let right // amount of space from right edge, a fraction of the total width
 
@@ -264,7 +293,7 @@ export default class TimeGridEventRenderer extends EventRenderer {
       forwardCoord = Math.min(1, backwardCoord + (forwardCoord - backwardCoord) * 2)
     }
 
-    if (isRTL) {
+    if (isRtl) {
       left = 1 - forwardCoord
       right = backwardCoord
     } else {
@@ -278,7 +307,7 @@ export default class TimeGridEventRenderer extends EventRenderer {
 
     if (shouldOverlap && seg.forwardPressure) {
       // add padding to the edge so that forward stacked events don't cover the resizer's icon
-      props[isRTL ? 'marginLeft' : 'marginRight'] = 10 * 2 // 10 is a guesstimate of the icon's width
+      props[isRtl ? 'marginLeft' : 'marginRight'] = 10 * 2 // 10 is a guesstimate of the icon's width
     }
 
     return props
@@ -289,7 +318,7 @@ export default class TimeGridEventRenderer extends EventRenderer {
 
 // Builds an array of segments "levels". The first level will be the leftmost tier of segments if the calendar is
 // left-to-right, or the rightmost if the calendar is right-to-left. Assumes the segments are already ordered by date.
-function buildSlotSegLevels(segs) {
+function buildSlotSegLevels(segs: Seg[]) {
   let levels = []
   let i
   let seg
@@ -340,7 +369,7 @@ function computeForwardSlotSegs(levels) {
 
 // Figure out which path forward (via seg.forwardSegs) results in the longest path until
 // the furthest edge is reached. The number of segments in this path will be seg.forwardPressure
-function computeSlotSegPressures(seg) {
+function computeSlotSegPressures(seg: Seg) {
   let forwardSegs = seg.forwardSegs
   let forwardPressure = 0
   let i
@@ -369,7 +398,7 @@ function computeSlotSegPressures(seg) {
 
 // Find all the segments in `otherSegs` that vertically collide with `seg`.
 // Append into an optionally-supplied `results` array and return.
-function computeSlotSegCollisions(seg, otherSegs, results= []) {
+function computeSlotSegCollisions(seg: Seg, otherSegs: Seg[], results= []) {
 
   for (let i = 0; i < otherSegs.length; i++) {
     if (isSlotSegCollision(seg, otherSegs[i])) {
@@ -382,6 +411,16 @@ function computeSlotSegCollisions(seg, otherSegs, results= []) {
 
 
 // Do these segments occupy the same vertical space?
-function isSlotSegCollision(seg1, seg2) {
+function isSlotSegCollision(seg1: Seg, seg2: Seg) {
   return seg1.bottom > seg2.top && seg1.top < seg2.bottom
+}
+
+
+function buildTimeGridSegCompareObj(seg: Seg) {
+  let obj = buildSegCompareObj(seg)
+
+  obj.forwardPressure = seg.forwardPressure
+  obj.backwardCoord = seg.backwardCoord
+
+  return obj
 }

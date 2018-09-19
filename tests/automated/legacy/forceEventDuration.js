@@ -22,7 +22,7 @@ describe('forceEventDuration', function() {
           }
         ]
       })
-      var events = currentCalendar.clientEvents()
+      var events = currentCalendar.getEvents()
       expect(events[0].end).toBeNull()
       expect(events[1].end).toBeNull()
     })
@@ -45,11 +45,11 @@ describe('forceEventDuration', function() {
           }
         ]
       })
-      var events = currentCalendar.clientEvents()
+      var events = currentCalendar.getEvents()
       expect(events[0].id).toEqual('1')
-      expect(moment.isMoment(events[0].end)).toEqual(true)
+      expect(events[0].end instanceof Date).toEqual(true)
       expect(events[1].id).toEqual('2')
-      expect(moment.isMoment(events[1].end)).toEqual(true)
+      expect(events[1].end instanceof Date).toEqual(true)
     })
   })
 

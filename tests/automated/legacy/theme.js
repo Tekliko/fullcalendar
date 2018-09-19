@@ -1,10 +1,11 @@
 describe('theme', function() {
 
+  pushOptions({
+    defaultView: 'agendaWeek'
+  })
+
   it('can be changed dynamically', function() {
-    affix('#cal')
-    $('#cal').fullCalendar({
-      defaultView: 'agendaWeek'
-    })
+    initCalendar()
 
     expect($('.fc')).toHaveClass('fc-unthemed')
     expect($('.fc')).not.toHaveClass('ui-widget')
@@ -16,7 +17,7 @@ describe('theme', function() {
     var scrollTop = $('.fc-scroller').scrollTop()
 
     // change option!
-    $('#cal').fullCalendar('option', 'theme', true)
+    currentCalendar.setOption('theme', true)
 
     expect($('.fc')).toHaveClass('ui-widget')
     expect($('.fc')).not.toHaveClass('fc-unthemed')
@@ -32,19 +33,16 @@ describe('theme', function() {
   // this tests the options setter with a single hash argument.
   // TODO: not best place for this.
   it('can be change with other options', function() {
-    affix('#cal')
-    $('#cal').fullCalendar({
-      defaultView: 'agendaWeek'
-    })
+    initCalendar()
 
     expect($('.fc')).toHaveClass('fc-unthemed')
     expect($('.fc')).not.toHaveClass('ui-widget')
     expect($('.fc-nonbusiness').length).toBe(0)
 
     // change option!
-    $('#cal').fullCalendar('option', {
-      theme: true,
-      businessHours: true
+    currentCalendar.batchRendering(function() {
+      currentCalendar.setOption('theme', true)
+      currentCalendar.setOption('businessHours', true)
     })
 
     expect($('.fc')).toHaveClass('ui-widget')

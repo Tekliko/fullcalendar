@@ -1,57 +1,54 @@
-import * as $ from 'jquery'
-import { cssToStr } from '../../util'
+import { cssToStr } from '../../util/html'
+import { htmlToElements, removeElement, elementMatches } from '../../util/dom-manip'
+import { Seg } from '../DateComponent'
 
 
 export default class FillRenderer { // use for highlight, background events, business hours
 
   fillSegTag: string = 'div'
   component: any
-  elsByFill: any // a hash of jQuery element sets used for rendering each fill. Keyed by fill name.
+  containerElsByType: any // a hash of element sets used for rendering each fill. Keyed by fill name.
+  renderedSegsByType: any
 
 
   constructor(component) {
     this.component = component
-    this.elsByFill = {}
+    this.containerElsByType = {}
+    this.renderedSegsByType = {}
   }
 
 
-  renderFootprint(type, componentFootprint, props) {
-    this.renderSegs(
-      type,
-      this.component.componentFootprintToSegs(componentFootprint),
-      props
-    )
-  }
+  renderSegs(type, segs: Seg[], props) {
+    let renderedSegs = this.buildSegEls(type, segs, props) // assignes `.el` to each seg. returns successfully rendered segs
+    let containerEls = this.attachSegEls(type, renderedSegs)
 
-
-  renderSegs(type, segs, props) {
-    let els
-
-    segs = this.buildSegEls(type, segs, props) // assignes `.el` to each seg. returns successfully rendered segs
-    els = this.attachSegEls(type, segs)
-
-    if (els) {
-      this.reportEls(type, els)
+    if (containerEls) {
+      (this.containerElsByType[type] || (this.containerElsByType[type] = []))
+        .push(...containerEls)
     }
 
-    return segs
+    this.renderedSegsByType[type] = renderedSegs
+
+    return renderedSegs
   }
 
 
   // Unrenders a specific type of fill that is currently rendered on the grid
   unrender(type) {
-    let el = this.elsByFill[type]
+    let containerEls = this.containerElsByType[type]
 
-    if (el) {
-      el.remove()
-      delete this.elsByFill[type]
+    if (containerEls) {
+      containerEls.forEach(removeElement)
+      delete this.containerElsByType[type]
     }
+
+    delete this.renderedSegsByType[type]
   }
 
 
   // Renders and assigns an `el` property for each fill segment. Generic enough to work with different types.
   // Only returns segments that successfully rendered.
-  buildSegEls(type, segs, props) {
+  buildSegEls(type, segs: Seg[], props) {
     let html = ''
     let renderedSegs = []
     let i
@@ -65,23 +62,18 @@ export default class FillRenderer { // use for highlight, background events, bus
 
       // Grab individual elements from the combined HTML string. Use each as the default rendering.
       // Then, compute the 'el' for each segment.
-      $(html).each((i, node) => {
+      htmlToElements(html).forEach((el, i) => {
         let seg = segs[i]
-        let el = $(node)
 
         // allow custom filter methods per-type
         if (props.filterEl) {
-          el = props.filterEl(seg, el)
+          el = props.filterEl(seg, el) // might return null/undefined
         }
 
-        if (el) { // custom filters did not cancel the render
-          el = $(el) // allow custom filter to return raw DOM node
-
-          // correct element type? (would be bad if a non-TD were inserted into a table for example)
-          if (el.is(this.fillSegTag)) {
-            seg.el = el
-            renderedSegs.push(seg)
-          }
+        // correct element type? (would be bad if a non-TD were inserted into a table for example)
+        if (el && elementMatches(el, this.fillSegTag)) {
+          seg.el = el
+          renderedSegs.push(seg)
         }
       })
     }
@@ -91,7 +83,7 @@ export default class FillRenderer { // use for highlight, background events, bus
 
 
   // Builds the HTML needed for one fill segment. Generic enough to work with different types.
-  buildSegHtml(type, seg, props) {
+  buildSegHtml(type, seg: Seg, props) {
     // custom hooks per-type
     let classes = props.getClasses ? props.getClasses(seg) : []
     let css = cssToStr(props.getCss ? props.getCss(seg) : {})
@@ -99,22 +91,21 @@ export default class FillRenderer { // use for highlight, background events, bus
     return '<' + this.fillSegTag +
       (classes.length ? ' class="' + classes.join(' ') + '"' : '') +
       (css ? ' style="' + css + '"' : '') +
-      ' />'
+      '></' + this.fillSegTag + '>'
   }
 
 
   // Should return wrapping DOM structure
-  attachSegEls(type, segs) {
+  attachSegEls(type, segs: Seg[]): HTMLElement[] {
     // subclasses must implement
+    return null
   }
 
 
-  reportEls(type, nodes) {
-    if (this.elsByFill[type]) {
-      this.elsByFill[type] = this.elsByFill[type].add(nodes)
-    } else {
-      this.elsByFill[type] = $(nodes)
-    }
+  computeSize(type: string) {
+  }
+
+  assignSize(type: string) {
   }
 
 }

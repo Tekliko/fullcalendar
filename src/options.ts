@@ -1,15 +1,16 @@
-import { mergeProps } from './util'
+import { mergeProps } from './util/object'
 
 
 export const globalDefaults = {
 
+  defaultRangeSeparator: ' - ',
   titleRangeSeparator: ' \u2013 ', // en dash
-  monthYearFormat: 'MMMM YYYY', // required for en. other locales rely on datepicker computable option
+  cmdFormatter: null,
 
-  defaultTimedEventDuration: '02:00:00',
-  defaultAllDayEventDuration: { days: 1 },
+  defaultTimedEventDuration: '01:00:00',
+  defaultAllDayEventDuration: { day: 1 },
   forceEventDuration: false,
-  nextDayThreshold: '09:00:00', // 9am
+  nextDayThreshold: '00:00:00',
 
   // display
   columnHeader: true,
@@ -22,11 +23,9 @@ export const globalDefaults = {
   },
   weekends: true,
   weekNumbers: false,
-
-  weekNumberTitle: 'W',
   weekNumberCalculation: 'local',
 
-  // editable: false,
+  editable: false,
 
   // nowIndicator: false,
 
@@ -39,29 +38,17 @@ export const globalDefaults = {
   lazyFetching: true,
   startParam: 'start',
   endParam: 'end',
-  timezoneParam: 'timezone',
+  timeZoneParam: 'timeZone',
 
-  timezone: false,
+  timeZone: 'local', // TODO: throw error if given falsy value?
+  timeZoneImpl: null,
 
   // allDayDefault: undefined,
 
   // locale
-  locale: null,
-  isRTL: false,
-  buttonText: {
-    prev: 'prev',
-    next: 'next',
-    prevYear: 'prev year',
-    nextYear: 'next year',
-    year: 'year', // TODO: locale files need to specify this
-    today: 'today',
-    month: 'month',
-    week: 'week',
-    day: 'day'
-  },
+  locale: 'en',
+  isRtl: false,
   // buttonIcons: null,
-
-  allDayText: 'all-day',
 
   // allows setting a min-height to the event segment to prevent short events overlapping each other
   agendaEventMinHeight: 0,
@@ -71,9 +58,10 @@ export const globalDefaults = {
   // themeButtonIcons: null,
 
   // eventResizableFromStart: false,
-  dragOpacity: .75,
   dragRevertDuration: 500,
   dragScroll: true,
+
+  isAllDayMaintainDuration: false,
 
   // selectable: false,
   unselectAuto: true,
@@ -81,24 +69,21 @@ export const globalDefaults = {
 
   dropAccept: '*',
 
-  eventOrder: 'title',
-  // eventRenderWait: null,
+  eventOrder: 'start,-duration,isAllDay,title',
+  // ^ if start tie, longer events go before shorter. final tie-breaker is title text
+
+  // rerenderDelay: null,
 
   eventLimit: false,
-  eventLimitText: 'more',
   eventLimitClick: 'popover',
-  dayPopoverFormat: 'LL',
+  dayPopoverFormat: { month: 'long', day: 'numeric', year: 'numeric' },
 
   handleWindowResize: true,
   windowResizeDelay: 100, // milliseconds before an updateSize happens
 
-  longPressDelay: 1000
+  longPressDelay: 1000,
+  eventDragMinDistance: 5 // only applies to mouse
 
-}
-
-
-export const englishDefaults = { // used by locale.js
-  dayPopoverFormat: 'dddd, MMMM D'
 }
 
 

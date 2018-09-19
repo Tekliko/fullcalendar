@@ -1,19 +1,27 @@
-import * as moment from 'moment'
-import * as $ from 'jquery'
+import { htmlEscape } from '../util/html'
+import { copyOwnProps } from '../util/object'
+import { findElements, createElement } from '../util/dom-manip'
 import {
   matchCellWidths,
   uncompensateScroll,
   compensateScroll,
-  subtractInnerElHeight,
-  htmlEscape,
-  copyOwnProps
-} from '../util'
-import Scroller from '../common/Scroller'
+  subtractInnerElHeight
+} from '../util/misc'
+import ScrollComponent from '../common/ScrollComponent'
 import View from '../View'
 import TimeGrid from './TimeGrid'
 import DayGrid from '../basic/DayGrid'
+import { createDuration } from '../datelib/duration'
+import { createFormatter } from '../datelib/formatting'
+import { EventStore, filterEventStoreDefs } from '../structs/event-store'
+import { RenderForceFlags } from '../component/Component'
+import { DateComponentRenderState } from '../component/DateComponent'
+import { EventInteractionUiState } from '../interactions/event-interaction-state'
+import reselector from '../util/reselector'
+import { EventUiHash, hasBgRendering } from '../component/event-rendering'
 
 const AGENDA_ALL_DAY_EVENT_LIMIT = 5
+const WEEK_HEADER_FORMAT = createFormatter({ week: 'short' })
 
 let agendaTimeGridMethods
 let agendaDayGridMethods
@@ -30,12 +38,20 @@ export default class AgendaView extends View {
   timeGridClass: any // class used to instantiate the timeGrid. subclasses can override
   dayGridClass: any // class used to instantiate the dayGrid. subclasses can override
 
-  timeGrid: any // the main time-grid subcomponent of this view
-  dayGrid: any // the "all-day" subcomponent. if all-day is turned off, this will be null
+  timeGrid: TimeGrid // the main time-grid subcomponent of this view
+  dayGrid: DayGrid // the "all-day" subcomponent. if all-day is turned off, this will be null
 
-  scroller: any
+  scroller: ScrollComponent
   axisWidth: any // the width of the time axis running down the side
   usesMinMaxTime: boolean = true // indicates that minTime/maxTime affects rendering
+
+  // reselectors
+  filterEventsForTimeGrid: any
+  filterEventsForDayGrid: any
+  buildEventDragForTimeGrid: any
+  buildEventDragForDayGrid: any
+  buildEventResizeForTimeGrid: any
+  buildEventResizeForDayGrid: any
 
 
   constructor(calendar, viewSpec) {
@@ -49,10 +65,17 @@ export default class AgendaView extends View {
       this.addChild(this.dayGrid)
     }
 
-    this.scroller = new Scroller({
-      overflowX: 'hidden',
-      overflowY: 'auto'
-    })
+    this.scroller = new ScrollComponent(
+      'hidden', // overflow x
+      'auto' // overflow y
+    )
+
+    this.filterEventsForTimeGrid = reselector(filterEventsForTimeGrid)
+    this.filterEventsForDayGrid = reselector(filterEventsForDayGrid)
+    this.buildEventDragForTimeGrid = reselector(buildInteractionForTimeGrid)
+    this.buildEventDragForDayGrid = reselector(buildInteractionForDayGrid)
+    this.buildEventResizeForTimeGrid = reselector(buildInteractionForTimeGrid)
+    this.buildEventResizeForDayGrid = reselector(buildInteractionForDayGrid)
   }
 
 
@@ -80,23 +103,26 @@ export default class AgendaView extends View {
     let timeGridWrapEl
     let timeGridEl
 
-    this.el.addClass('fc-agenda-view').html(this.renderSkeletonHtml())
+    this.el.classList.add('fc-agenda-view')
+    this.el.innerHTML = this.renderSkeletonHtml()
 
-    this.scroller.render()
+    this.scroller.applyOverflow()
 
-    timeGridWrapEl = this.scroller.el.addClass('fc-time-grid-container')
-    timeGridEl = $('<div class="fc-time-grid" />').appendTo(timeGridWrapEl)
+    timeGridWrapEl = this.scroller.el
+    timeGridWrapEl.classList.add('fc-time-grid-container')
+    timeGridEl = createElement('div', { className: 'fc-time-grid' })
+    timeGridWrapEl.appendChild(timeGridEl)
 
-    this.el.find('.fc-body > tr > td').append(timeGridWrapEl)
+    this.el.querySelector('.fc-body > tr > td').appendChild(timeGridWrapEl)
 
-    this.timeGrid.headContainerEl = this.el.find('.fc-head-container')
+    this.timeGrid.headContainerEl = this.el.querySelector('.fc-head-container')
     this.timeGrid.setElement(timeGridEl)
 
     if (this.dayGrid) {
-      this.dayGrid.setElement(this.el.find('.fc-day-grid'))
+      this.dayGrid.setElement(this.el.querySelector('.fc-day-grid'))
 
       // have the day-grid extend it's coordinate area over the <hr> dividing the two grids
-      this.dayGrid.bottomCoordPadding = this.dayGrid.el.next('hr').outerHeight()
+      this.dayGrid.bottomCoordPadding = (this.el.querySelector('.fc-divider') as HTMLElement).offsetHeight
     }
   }
 
@@ -108,14 +134,14 @@ export default class AgendaView extends View {
       this.dayGrid.removeElement()
     }
 
-    this.scroller.destroy()
+    this.scroller.removeElement()
   }
 
 
   // Builds the HTML skeleton for the view.
   // The day-grid and time-grid components will render inside containers defined by this HTML.
   renderSkeletonHtml() {
-    let theme = this.calendar.theme
+    let theme = this.getTheme()
 
     return '' +
       '<table class="' + theme.getClass('tableGrid') + '">' +
@@ -131,8 +157,8 @@ export default class AgendaView extends View {
           '<tr>' +
             '<td class="' + theme.getClass('widgetContent') + '">' +
               (this.dayGrid ?
-                '<div class="fc-day-grid"/>' +
-                '<hr class="fc-divider ' + theme.getClass('widgetHeader') + '"/>' :
+                '<div class="fc-day-grid"></div>' +
+                '<hr class="fc-divider ' + theme.getClass('widgetHeader') + '" />' :
                 ''
                 ) +
             '</td>' +
@@ -151,6 +177,47 @@ export default class AgendaView extends View {
   }
 
 
+  /* Render Delegation
+  ------------------------------------------------------------------------------------------------------------------*/
+
+
+  renderChildren(renderState: DateComponentRenderState, forceFlags: RenderForceFlags) {
+    let allDaySeletion = null
+    let timedSelection = null
+    if (renderState.dateSelection) {
+      if (renderState.dateSelection.isAllDay) {
+        allDaySeletion = renderState.dateSelection
+      } else {
+        timedSelection = renderState.dateSelection
+      }
+    }
+
+    this.timeGrid.render({
+      dateProfile: renderState.dateProfile,
+      eventStore: this.filterEventsForTimeGrid(renderState.eventStore, renderState.eventUis),
+      eventUis: renderState.eventUis,
+      dateSelection: timedSelection,
+      eventSelection: renderState.eventSelection,
+      eventDrag: this.buildEventDragForTimeGrid(renderState.eventDrag),
+      eventResize: this.buildEventResizeForTimeGrid(renderState.eventResize),
+      businessHours: renderState.businessHours
+    }, forceFlags)
+
+    if (this.dayGrid) {
+      this.dayGrid.render({
+        dateProfile: renderState.dateProfile,
+        eventStore: this.filterEventsForDayGrid(renderState.eventStore, renderState.eventUis),
+        eventUis: renderState.eventUis,
+        dateSelection: allDaySeletion,
+        eventSelection: renderState.eventSelection,
+        eventDrag: this.buildEventDragForDayGrid(renderState.eventDrag),
+        eventResize: this.buildEventResizeForDayGrid(renderState.eventResize),
+        businessHours: renderState.businessHours
+      }, forceFlags)
+    }
+  }
+
+
   /* Now Indicator
   ------------------------------------------------------------------------------------------------------------------*/
 
@@ -165,15 +232,13 @@ export default class AgendaView extends View {
 
 
   // Adjusts the vertical dimensions of the view to the specified values
-  updateSize(totalHeight, isAuto, isResize) {
+  updateBaseSize(totalHeight, isAuto) {
     let eventLimit
     let scrollerHeight
     let scrollbarWidths
 
-    super.updateSize(totalHeight, isAuto, isResize)
-
     // make all axis cells line up, and record the width so newly created axis cells will have it
-    this.axisWidth = matchCellWidths(this.el.find('.fc-axis'))
+    this.axisWidth = matchCellWidths(findElements(this.el, '.fc-axis'))
 
     // hack to give the view some height prior to timeGrid's columns being rendered
     // TODO: separate setting height from scroller VS timeGrid.
@@ -186,12 +251,14 @@ export default class AgendaView extends View {
     }
 
     // set of fake row elements that must compensate when scroller has scrollbars
-    let noScrollRowEls = this.el.find('.fc-row:not(.fc-scroller *)')
+    let noScrollRowEls: HTMLElement[] = findElements(this.el, '.fc-row').filter((node) => {
+      return !this.scroller.el.contains(node)
+    })
 
     // reset all dimensions back to the original state
-    this.timeGrid.bottomRuleEl.hide() // .show() will be called later if this <hr> is necessary
+    this.timeGrid.bottomRuleEl.style.display = 'none' // will be shown later if this <hr> is necessary
     this.scroller.clear() // sets height to 'auto' and clears overflow
-    uncompensateScroll(noScrollRowEls)
+    noScrollRowEls.forEach(uncompensateScroll)
 
     // limit number of events in the all-day area
     if (this.dayGrid) {
@@ -215,7 +282,9 @@ export default class AgendaView extends View {
       if (scrollbarWidths.left || scrollbarWidths.right) { // using scrollbars?
 
         // make the all-day and header rows lines up
-        compensateScroll(noScrollRowEls, scrollbarWidths)
+        noScrollRowEls.forEach(function(rowEl) {
+          compensateScroll(rowEl, scrollbarWidths)
+        })
 
         // the scrollbar compensation might have changed text flow, which might affect height, so recalculate
         // and reapply the desired height to the scroller.
@@ -229,7 +298,7 @@ export default class AgendaView extends View {
       // if there's any space below the slats, show the horizontal rule.
       // this won't cause any new overflow, because lockOverflow already called.
       if (this.timeGrid.getTotalSlatHeight() < scrollerHeight) {
-        this.timeGrid.bottomRuleEl.show()
+        this.timeGrid.bottomRuleEl.style.display = ''
       }
     }
   }
@@ -248,8 +317,8 @@ export default class AgendaView extends View {
 
   // Computes the initial pre-configured scroll state prior to allowing the user to change it
   computeInitialDateScroll() {
-    let scrollTime = moment.duration(this.opt('scrollTime'))
-    let top = this.timeGrid.computeTimeTop(scrollTime)
+    let scrollTime = createDuration(this.opt('scrollTime'))
+    let top = this.timeGrid.computeTimeTop(scrollTime.milliseconds)
 
     // zoom can give weird floating-point values. rather scroll a little bit further
     top = Math.ceil(top)
@@ -273,96 +342,6 @@ export default class AgendaView extends View {
     }
   }
 
-
-  /* Hit Areas
-  ------------------------------------------------------------------------------------------------------------------*/
-  // forward all hit-related method calls to the grids (dayGrid might not be defined)
-
-
-  getHitFootprint(hit) {
-    // TODO: hit.component is set as a hack to identify where the hit came from
-    return hit.component.getHitFootprint(hit)
-  }
-
-
-  getHitEl(hit) {
-    // TODO: hit.component is set as a hack to identify where the hit came from
-    return hit.component.getHitEl(hit)
-  }
-
-
-  /* Event Rendering
-  ------------------------------------------------------------------------------------------------------------------*/
-
-
-  executeEventRender(eventsPayload) {
-    let dayEventsPayload = {}
-    let timedEventsPayload = {}
-    let id
-    let eventInstanceGroup
-
-    // separate the events into all-day and timed
-    for (id in eventsPayload) {
-      eventInstanceGroup = eventsPayload[id]
-
-      if (eventInstanceGroup.getEventDef().isAllDay()) {
-        dayEventsPayload[id] = eventInstanceGroup
-      } else {
-        timedEventsPayload[id] = eventInstanceGroup
-      }
-    }
-
-    this.timeGrid.executeEventRender(timedEventsPayload)
-
-    if (this.dayGrid) {
-      this.dayGrid.executeEventRender(dayEventsPayload)
-    }
-  }
-
-
-  /* Dragging/Resizing Routing
-  ------------------------------------------------------------------------------------------------------------------*/
-
-
-  // A returned value of `true` signals that a mock "helper" event has been rendered.
-  renderDrag(eventFootprints, seg, isTouch) {
-    let groups = groupEventFootprintsByAllDay(eventFootprints)
-    let renderedHelper = false
-
-    renderedHelper = this.timeGrid.renderDrag(groups.timed, seg, isTouch)
-
-    if (this.dayGrid) {
-      renderedHelper = this.dayGrid.renderDrag(groups.allDay, seg, isTouch) || renderedHelper
-    }
-
-    return renderedHelper
-  }
-
-
-  renderEventResize(eventFootprints, seg, isTouch) {
-    let groups = groupEventFootprintsByAllDay(eventFootprints)
-
-    this.timeGrid.renderEventResize(groups.timed, seg, isTouch)
-
-    if (this.dayGrid) {
-      this.dayGrid.renderEventResize(groups.allDay, seg, isTouch)
-    }
-  }
-
-
-  /* Selection
-  ------------------------------------------------------------------------------------------------------------------*/
-
-
-  // Renders a visual indication of a selection
-  renderSelectionFootprint(componentFootprint) {
-    if (!componentFootprint.isAllDay) {
-      this.timeGrid.renderSelectionFootprint(componentFootprint)
-    } else if (this.dayGrid) {
-      this.dayGrid.renderSelectionFootprint(componentFootprint)
-    }
-  }
-
 }
 
 
@@ -377,11 +356,12 @@ agendaTimeGridMethods = {
   renderHeadIntroHtml() {
     let view = this.view
     let calendar = view.calendar
-    let weekStart = calendar.msToUtcMoment(this.dateProfile.renderUnzonedRange.startMs, true)
+    let dateEnv = calendar.dateEnv
+    let weekStart = this.dateProfile.renderRange.start
     let weekText
 
     if (this.opt('weekNumbers')) {
-      weekText = weekStart.format(this.opt('smallWeekFormat'))
+      weekText = dateEnv.format(weekStart, WEEK_HEADER_FORMAT)
 
       return '' +
         '<th class="fc-axis fc-week-number ' + calendar.theme.getClass('widgetHeader') + '" ' + view.axisStyleAttr() + '>' +
@@ -405,7 +385,7 @@ agendaTimeGridMethods = {
 
 
   // Generates the HTML that goes before all other types of cells.
-  // Affects content-skeleton, helper-skeleton, highlight-skeleton for both the time-grid and day-grid.
+  // Affects content-skeleton, mirror-skeleton, highlight-skeleton for both the time-grid and day-grid.
   renderIntroHtml() {
     let view = this.view
 
@@ -432,7 +412,7 @@ agendaDayGridMethods = {
 
 
   // Generates the HTML that goes before all other types of cells.
-  // Affects content-skeleton, helper-skeleton, highlight-skeleton for both the time-grid and day-grid.
+  // Affects content-skeleton, mirror-skeleton, highlight-skeleton for both the time-grid and day-grid.
   renderIntroHtml() {
     let view = this.view
 
@@ -441,19 +421,40 @@ agendaDayGridMethods = {
 
 }
 
+function filterEventsForTimeGrid(eventStore: EventStore, eventUis: EventUiHash): EventStore {
+  return filterEventStoreDefs(eventStore, function(eventDef) {
+    return !eventDef.isAllDay || hasBgRendering(eventUis[eventDef.defId])
+  })
+}
 
-function groupEventFootprintsByAllDay(eventFootprints) {
-  let allDay = []
-  let timed = []
-  let i
+function filterEventsForDayGrid(eventStore: EventStore, eventUis: EventUiHash): EventStore {
+  return filterEventStoreDefs(eventStore, function(eventDef) {
+    return eventDef.isAllDay
+  })
+}
 
-  for (i = 0; i < eventFootprints.length; i++) {
-    if (eventFootprints[i].componentFootprint.isAllDay) {
-      allDay.push(eventFootprints[i])
-    } else {
-      timed.push(eventFootprints[i])
+function buildInteractionForTimeGrid(state: EventInteractionUiState): EventInteractionUiState {
+  if (state) {
+    return {
+      affectedEvents: state.affectedEvents,
+      mutatedEvents: filterEventsForTimeGrid(state.mutatedEvents, state.eventUis),
+      eventUis: state.eventUis,
+      isEvent: state.isEvent,
+      origSeg: state.origSeg
     }
   }
+  return null
+}
 
-  return { allDay: allDay, timed: timed }
+function buildInteractionForDayGrid(state: EventInteractionUiState): EventInteractionUiState {
+  if (state) {
+    return {
+      affectedEvents: state.affectedEvents,
+      mutatedEvents: filterEventsForDayGrid(state.mutatedEvents, state.eventUis),
+      eventUis: state.eventUis,
+      isEvent: state.isEvent,
+      origSeg: state.origSeg
+    }
+  }
+  return null
 }

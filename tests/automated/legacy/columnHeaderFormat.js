@@ -1,13 +1,15 @@
 
 describe('columnHeaderFormat', function() {
 
-  describe('when columnFormat is not set', function() {
+  describe('when not set', function() {
 
-    var viewWithFormat = [ { view: 'month', expected: 'Sun', selector: 'th.fc-day-header.fc-sun' },
+    var viewWithFormat = [
+      { view: 'month', expected: 'Sun', selector: 'th.fc-day-header.fc-sun' },
       { view: 'basicWeek', expected: 'Sun 5/11', selector: 'th.fc-day-header.fc-sun' },
       { view: 'agendaWeek', expected: 'Sun 5/11', selector: 'th.fc-widget-header.fc-sun' },
       { view: 'basicDay', expected: 'Sunday', selector: 'th.fc-day-header.fc-sun' },
-      { view: 'agendaDay', expected: 'Sunday', selector: 'th.fc-widget-header.fc-sun' } ]
+      { view: 'agendaDay', expected: 'Sunday', selector: 'th.fc-widget-header.fc-sun' }
+    ]
 
     beforeEach(function() {
       initCalendar({
@@ -20,28 +22,26 @@ describe('columnHeaderFormat', function() {
       for (var i = 0; i < viewWithFormat.length; i++) {
         var crtView = viewWithFormat[i]
         currentCalendar.changeView(crtView.view)
-        expect(currentCalendar.el.find(crtView.selector).text()).toBe(crtView.expected)
+        expect($(currentCalendar.el).find(crtView.selector).text()).toBe(crtView.expected)
       };
     })
   })
 
   describe('when columnHeaderFormat is set on a per-view basis', function() {
 
-    var viewWithFormat = [ { view: 'month', expected: 'Sunday', selector: 'th.fc-day-header.fc-sun' },
-      { view: 'basicWeek', expected: 'Sunday 11 - 5', selector: 'th.fc-day-header.fc-sun' },
-      { view: 'agendaWeek', expected: 'Sunday 11 , 5', selector: 'th.fc-widget-header.fc-sun' },
-      { view: 'basicDay', expected: 'Sunday 11 | 5', selector: 'th.fc-day-header.fc-sun' },
-      { view: 'agendaDay', expected: 'Sunday 5/11', selector: 'th.fc-widget-header.fc-sun' } ]
+    var viewWithFormat = [
+      { view: 'month', expected: 'Sunday', selector: 'th.fc-day-header.fc-sun' },
+      { view: 'agendaDay', expected: 'Sunday, May 11', selector: 'th.fc-widget-header.fc-sun' },
+      { view: 'basicWeek', expected: 'Sunday, 5/11', selector: 'th.fc-day-header.fc-sun' }
+    ]
 
     beforeEach(function() {
       initCalendar({
         defaultDate: '2014-05-11',
         views: {
-          month: { columnHeaderFormat: 'dddd' },
-          agendaDay: { columnHeaderFormat: 'dddd M/D' },
-          agendaWeek: { columnHeaderFormat: 'dddd D , M' },
-          basicDay: { columnHeaderFormat: 'dddd D | M' },
-          basicWeek: { columnHeaderFormat: 'dddd D - M' }
+          month: { columnHeaderFormat: { weekday: 'long' } },
+          agendaDay: { columnHeaderFormat: { weekday: 'long', month: 'long', day: 'numeric' } },
+          basicWeek: { columnHeaderFormat: { weekday: 'long', month: 'numeric', day: 'numeric' } }
         }
       })
     })
@@ -51,18 +51,20 @@ describe('columnHeaderFormat', function() {
       for (var i = 0; i < viewWithFormat.length; i++) {
         var crtView = viewWithFormat[i]
         currentCalendar.changeView(crtView.view)
-        expect(currentCalendar.el.find(crtView.selector).text()).toBe(crtView.expected)
+        expect($(currentCalendar.el).find(crtView.selector).text()).toBe(crtView.expected)
       };
     })
   })
 
   describe('when locale is French', function() {
 
-    var viewWithFormat = [ { view: 'month', expected: 'dim.', selector: 'th.fc-day-header.fc-sun' },
-      { view: 'basicWeek', expected: 'dim. 11/5', selector: 'th.fc-day-header.fc-sun' },
-      { view: 'agendaWeek', expected: 'dim. 11/5', selector: 'th.fc-widget-header.fc-sun' },
+    var viewWithFormat = [
+      { view: 'month', expected: 'dim.', selector: 'th.fc-day-header.fc-sun' },
+      { view: 'basicWeek', expected: 'dim. 11/05', selector: 'th.fc-day-header.fc-sun' },
+      { view: 'agendaWeek', expected: 'dim. 11/05', selector: 'th.fc-widget-header.fc-sun' },
       { view: 'basicDay', expected: 'dimanche', selector: 'th.fc-day-header.fc-sun' },
-      { view: 'agendaDay', expected: 'dimanche', selector: 'th.fc-widget-header.fc-sun' } ]
+      { view: 'agendaDay', expected: 'dimanche', selector: 'th.fc-widget-header.fc-sun' }
+    ]
 
     beforeEach(function() {
       initCalendar({
@@ -76,18 +78,20 @@ describe('columnHeaderFormat', function() {
       for (var i = 0; i < viewWithFormat.length; i++) {
         var crtView = viewWithFormat[i]
         currentCalendar.changeView(crtView.view)
-        expect(currentCalendar.el.find(crtView.selector).text()).toBe(crtView.expected)
+        expect($(currentCalendar.el).find(crtView.selector).text()).toBe(crtView.expected)
       };
     })
   })
 
   describe('when locale is en-gb', function() {
 
-    var viewWithFormat = [ { view: 'month', expected: 'Sun', selector: 'th.fc-day-header.fc-sun' },
-      { view: 'basicWeek', expected: 'Sun 11/5', selector: 'th.fc-day-header.fc-sun' },
-      { view: 'agendaWeek', expected: 'Sun 11/5', selector: 'th.fc-widget-header.fc-sun' },
+    var viewWithFormat = [
+      { view: 'month', expected: 'Sun', selector: 'th.fc-day-header.fc-sun' },
+      { view: 'basicWeek', expected: 'Sun 11/05', selector: 'th.fc-day-header.fc-sun' },
+      { view: 'agendaWeek', expected: 'Sun 11/05', selector: 'th.fc-widget-header.fc-sun' },
       { view: 'basicDay', expected: 'Sunday', selector: 'th.fc-day-header.fc-sun' },
-      { view: 'agendaDay', expected: 'Sunday', selector: 'th.fc-widget-header.fc-sun' } ]
+      { view: 'agendaDay', expected: 'Sunday', selector: 'th.fc-widget-header.fc-sun' }
+    ]
 
     beforeEach(function() {
       initCalendar({
@@ -101,18 +105,20 @@ describe('columnHeaderFormat', function() {
       for (var i = 0; i < viewWithFormat.length; i++) {
         var crtView = viewWithFormat[i]
         currentCalendar.changeView(crtView.view)
-        expect(currentCalendar.el.find(crtView.selector).text()).toBe(crtView.expected)
+        expect($(currentCalendar.el).find(crtView.selector).text()).toBe(crtView.expected)
       };
     })
   })
 
   describe('when locale is Korean', function() {
 
-    var viewWithFormat = [ { view: 'month', expected: '일', selector: 'th.fc-day-header.fc-sun' },
-      { view: 'basicWeek', expected: '일 05.11.', selector: 'th.fc-day-header.fc-sun' },
-      { view: 'agendaWeek', expected: '일 05.11.', selector: 'th.fc-widget-header.fc-sun' },
+    var viewWithFormat = [
+      { view: 'month', expected: '일', selector: 'th.fc-day-header.fc-sun' },
+      { view: 'basicWeek', expected: '5. 11. (일)', selector: 'th.fc-day-header.fc-sun' },
+      { view: 'agendaWeek', expected: '5. 11. (일)', selector: 'th.fc-widget-header.fc-sun' },
       { view: 'basicDay', expected: '일요일', selector: 'th.fc-day-header.fc-sun' },
-      { view: 'agendaDay', expected: '일요일', selector: 'th.fc-widget-header.fc-sun' } ]
+      { view: 'agendaDay', expected: '일요일', selector: 'th.fc-widget-header.fc-sun' }
+    ]
 
     beforeEach(function() {
       initCalendar({
@@ -125,7 +131,7 @@ describe('columnHeaderFormat', function() {
       for (var i = 0; i < viewWithFormat.length; i++) {
         var crtView = viewWithFormat[i]
         currentCalendar.changeView(crtView.view)
-        expect(currentCalendar.el.find(crtView.selector).text()).toBe(crtView.expected)
+        expect($(currentCalendar.el).find(crtView.selector).text()).toBe(crtView.expected)
       };
     })
   })

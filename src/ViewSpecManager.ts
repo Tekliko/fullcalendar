@@ -1,22 +1,17 @@
-import * as moment from 'moment'
-import * as $ from 'jquery'
 import { viewHash } from './ViewRegistry'
-import { mergeProps, unitsDesc, computeDurationGreatestUnit } from './util'
+import { mergeProps } from './util/object'
 import { mergeOptions, globalDefaults } from './options'
-import { populateInstanceComputableOptions } from './locale'
+import { Duration, createDuration, getWeeksFromInput, greatestDurationDenominator } from './datelib/duration'
 
 
 export default class ViewSpecManager {
 
-  _calendar: any // avoid
   optionsManager: any
   viewSpecCache: any // cache of view definitions (initialized in Calendar.js)
 
 
-  constructor(optionsManager, _calendar) {
+  constructor(optionsManager) {
     this.optionsManager = optionsManager
-    this._calendar = _calendar
-
     this.clearCache()
   }
 
@@ -36,25 +31,22 @@ export default class ViewSpecManager {
 
   // Given a duration singular unit, like "week" or "day", finds a matching view spec.
   // Preference is given to views that have corresponding buttons.
-  getUnitViewSpec(unit) {
+  getUnitViewSpec(unit, calendar) {
     let viewTypes
     let i
     let spec
 
-    if ($.inArray(unit, unitsDesc) !== -1) {
+    // put views that have buttons first. there will be duplicates, but oh well
+    viewTypes = calendar.header.getViewsWithButtons() // TODO: include footer as well?
+    for (let viewType in viewHash) {
+      viewTypes.push(viewType)
+    }
 
-      // put views that have buttons first. there will be duplicates, but oh well
-      viewTypes = this._calendar.header.getViewsWithButtons() // TODO: include footer as well?
-      $.each(viewHash, function(viewType) { // all views
-        viewTypes.push(viewType)
-      })
-
-      for (i = 0; i < viewTypes.length; i++) {
-        spec = this.getViewSpec(viewTypes[i])
-        if (spec) {
-          if (spec.singleUnit === unit) {
-            return spec
-          }
+    for (i = 0; i < viewTypes.length; i++) {
+      spec = this.getViewSpec(viewTypes[i])
+      if (spec) {
+        if (spec.singleUnit === unit) {
+          return spec
         }
       }
     }
@@ -71,8 +63,7 @@ export default class ViewSpecManager {
     let spec // for the view
     let overrides // for the view
     let durationInput
-    let duration
-    let unit
+    let duration: Duration
 
     // iterate from the specific view definition to a more general one until we hit an actual View class
     while (viewType) {
@@ -110,20 +101,23 @@ export default class ViewSpecManager {
       this.optionsManager.overrides.duration
 
     if (durationInput) {
-      duration = moment.duration(durationInput)
+      duration = createDuration(durationInput)
 
-      if (duration.valueOf()) { // valid?
+      if (duration) { // valid?
 
-        unit = computeDurationGreatestUnit(duration, durationInput)
+        let denom = greatestDurationDenominator(
+          duration,
+          !getWeeksFromInput(durationInput)
+        )
 
         spec.duration = duration
-        spec.durationUnit = unit
+        spec.durationUnit = denom.unit
 
         // view is a single-unit duration, like "week" or "day"
         // incorporate options for this. lowest priority
-        if (duration.as(unit) === 1) {
-          spec.singleUnit = unit
-          overridesChain.unshift(viewOverrides[unit] || {})
+        if (denom.value === 1) {
+          spec.singleUnit = denom.unit
+          overridesChain.unshift(viewOverrides[denom.unit] || {})
         }
       }
     }
@@ -151,7 +145,6 @@ export default class ViewSpecManager {
       spec.overrides, // view's overrides (view-specific options)
       optionsManager.dynamicOverrides // dynamically set via setter. highest precedence
     ])
-    populateInstanceComputableOptions(spec.options)
   }
 
 
@@ -182,7 +175,6 @@ export default class ViewSpecManager {
       queryButtonText(optionsManager.dirDefaults) ||
       spec.defaults.buttonText || // a single string. from ViewSubclass.defaults
       queryButtonText(globalDefaults) ||
-      (spec.duration ? this._calendar.humanizeDuration(spec.duration) : null) || // like "3 days"
       requestedViewType // fall back to given view name
   }
 

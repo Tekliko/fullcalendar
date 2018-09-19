@@ -1,16 +1,20 @@
-import * as $ from 'jquery'
-import * as moment from 'moment'
-import { isInt, divideDurationByDuration, htmlEscape } from '../util'
-import InteractiveDateComponent from '../component/InteractiveDateComponent'
-import BusinessHourRenderer from '../component/renderers/BusinessHourRenderer'
-import StandardInteractionsMixin from '../component/interactions/StandardInteractionsMixin'
+import { htmlEscape } from '../util/html'
+import { htmlToElement, findElements, createElement, removeElement, applyStyle } from '../util/dom-manip'
 import { default as DayTableMixin, DayTableInterface } from '../component/DayTableMixin'
-import CoordCache from '../common/CoordCache'
-import UnzonedRange from '../models/UnzonedRange'
-import ComponentFootprint from '../models/ComponentFootprint'
+import PositionCache from '../common/PositionCache'
+import { DateRange, intersectRanges } from '../datelib/date-range'
 import TimeGridEventRenderer from './TimeGridEventRenderer'
-import TimeGridHelperRenderer from './TimeGridHelperRenderer'
+import TimeGridMirrorRenderer from './TimeGridMirrorRenderer'
 import TimeGridFillRenderer from './TimeGridFillRenderer'
+import { Duration, createDuration, addDurations, multiplyDuration, wholeDivideDurations, asRoughMs } from '../datelib/duration'
+import { startOfDay, DateMarker, addMs } from '../datelib/marker'
+import { DateFormatter, createFormatter, formatIsoTimeString } from '../datelib/formatting'
+import DateComponent, { Seg } from '../component/DateComponent'
+import OffsetTracker from '../common/OffsetTracker'
+import { DateSpan } from '../structs/date-span'
+import { EventStore } from '../structs/event-store'
+import { Hit } from '../interactions/HitDragging'
+import { EventUiHash } from '../component/event-rendering'
 
 /* A component that renders one or more columns of vertical time slots
 ----------------------------------------------------------------------------------------------------------------------*/
@@ -18,7 +22,7 @@ import TimeGridFillRenderer from './TimeGridFillRenderer'
 
 // potential nice values for the slot-duration and interval-duration
 // from largest to smallest
-let AGENDA_STOCK_SUB_DURATIONS = [
+const AGENDA_STOCK_SUB_DURATIONS = [
   { hours: 1 },
   { minutes: 30 },
   { minutes: 15 },
@@ -26,7 +30,7 @@ let AGENDA_STOCK_SUB_DURATIONS = [
   { seconds: 15 }
 ]
 
-export default class TimeGrid extends InteractiveDateComponent {
+export default class TimeGrid extends DateComponent {
 
   dayDates: DayTableInterface['dayDates']
   daysPerRow: DayTableInterface['daysPerRow']
@@ -37,40 +41,42 @@ export default class TimeGrid extends InteractiveDateComponent {
   bookendCells: DayTableInterface['bookendCells']
   getCellDate: DayTableInterface['getCellDate']
 
+  isInteractable = true
+  doesDragMirror = true
+  doesDragHighlight = false
+  slicingType: 'timed' = 'timed' // stupid TypeScript
+
   view: any // TODO: make more general and/or remove
-  helperRenderer: any
+  mirrorRenderer: any
 
-  dayRanges: any // UnzonedRange[], of start-end of each day
-  slotDuration: any // duration of a "slot", a distinct time segment on given day, visualized by lines
-  snapDuration: any // granularity of time for dragging and selecting
+  dayRanges: DateRange[] // of start-end of each day
+  slotDuration: Duration // duration of a "slot", a distinct time segment on given day, visualized by lines
+  snapDuration: Duration // granularity of time for dragging and selecting
   snapsPerSlot: any
-  labelFormat: any // formatting string for times running along vertical axis
-  labelInterval: any // duration of how often a label should be displayed for a slot
+  labelFormat: DateFormatter // formatting string for times running along vertical axis
+  labelInterval: Duration // duration of how often a label should be displayed for a slot
 
-  headContainerEl: any // div that hold's the date header
-  colEls: any // cells elements in the day-row background
-  slatContainerEl: any // div that wraps all the slat rows
-  slatEls: any // elements running horizontally across all columns
-  nowIndicatorEls: any
+  headContainerEl: HTMLElement // div that hold's the date header
+  colEls: HTMLElement[] // cells elements in the day-row background
+  slatContainerEl: HTMLElement // div that wraps all the slat rows
+  slatEls: HTMLElement[] // elements running horizontally across all columns
+  nowIndicatorEls: HTMLElement[]
 
-  colCoordCache: any
-  slatCoordCache: any
+  colPositions: PositionCache
+  slatPositions: PositionCache
+  offsetTracker: OffsetTracker
 
-  bottomRuleEl: any // hidden by default
-  contentSkeletonEl: any
-  colContainerEls: any // containers for each column
+  rootBgContainerEl: HTMLElement
+  bottomRuleEl: HTMLElement // hidden by default
+  contentSkeletonEl: HTMLElement
+  colContainerEls: HTMLElement[] // containers for each column
 
   // inner-containers for each column where different types of segs live
-  fgContainerEls: any
-  bgContainerEls: any
-  helperContainerEls: any
-  highlightContainerEls: any
-  businessContainerEls: any
-
-  // arrays of different types of displayed segments
-  helperSegs: any
-  highlightSegs: any
-  businessSegs: any
+  fgContainerEls: HTMLElement[]
+  bgContainerEls: HTMLElement[]
+  mirrorContainerEls: HTMLElement[]
+  highlightContainerEls: HTMLElement[]
+  businessContainerEls: HTMLElement[]
 
 
   constructor(view) {
@@ -80,19 +86,27 @@ export default class TimeGrid extends InteractiveDateComponent {
 
 
   // Slices up the given span (unzoned start/end with other misc data) into an array of segments
-  componentFootprintToSegs(componentFootprint) {
-    let segs = this.sliceRangeByTimes(componentFootprint.unzonedRange)
-    let i
+  rangeToSegs(range: DateRange): Seg[] {
+    range = intersectRanges(range, this.dateProfile.validRange)
 
-    for (i = 0; i < segs.length; i++) {
-      if (this.isRTL) {
-        segs[i].col = this.daysPerRow - 1 - segs[i].dayIndex
-      } else {
-        segs[i].col = segs[i].dayIndex
+    if (range) {
+      let segs = this.sliceRangeByTimes(range)
+      let i
+
+      for (i = 0; i < segs.length; i++) {
+        if (this.isRtl) {
+          segs[i].col = this.daysPerRow - 1 - segs[i].dayIndex
+        } else {
+          segs[i].col = segs[i].dayIndex
+        }
+
+        segs[i].component = this
       }
-    }
 
-    return segs
+      return segs
+    } else {
+      return []
+    }
   }
 
 
@@ -100,21 +114,21 @@ export default class TimeGrid extends InteractiveDateComponent {
   ------------------------------------------------------------------------------------------------------------------*/
 
 
-  sliceRangeByTimes(unzonedRange) {
+  sliceRangeByTimes(range) {
     let segs = []
     let segRange
     let dayIndex
 
     for (dayIndex = 0; dayIndex < this.daysPerRow; dayIndex++) {
 
-      segRange = unzonedRange.intersect(this.dayRanges[dayIndex])
+      segRange = intersectRanges(range, this.dayRanges[dayIndex])
 
       if (segRange) {
         segs.push({
-          startMs: segRange.startMs,
-          endMs: segRange.endMs,
-          isStart: segRange.isStart,
-          isEnd: segRange.isEnd,
+          start: segRange.start,
+          end: segRange.end,
+          isStart: segRange.start.valueOf() === range.start.valueOf(),
+          isEnd: segRange.end.valueOf() === range.end.valueOf(),
           dayIndex: dayIndex
         })
       }
@@ -132,28 +146,40 @@ export default class TimeGrid extends InteractiveDateComponent {
   processOptions() {
     let slotDuration = this.opt('slotDuration')
     let snapDuration = this.opt('snapDuration')
+    let snapsPerSlot
     let input
 
-    slotDuration = moment.duration(slotDuration)
-    snapDuration = snapDuration ? moment.duration(snapDuration) : slotDuration
+    slotDuration = createDuration(slotDuration)
+    snapDuration = snapDuration ? createDuration(snapDuration) : slotDuration
+    snapsPerSlot = wholeDivideDurations(slotDuration, snapDuration)
+
+    if (snapsPerSlot === null) {
+      snapDuration = slotDuration
+      snapsPerSlot = 1
+      // TODO: say warning?
+    }
 
     this.slotDuration = slotDuration
     this.snapDuration = snapDuration
-    this.snapsPerSlot = slotDuration / snapDuration // TODO: ensure an integer multiple?
+    this.snapsPerSlot = snapsPerSlot
 
     // might be an array value (for TimelineView).
     // if so, getting the most granular entry (the last one probably).
     input = this.opt('slotLabelFormat')
-    if ($.isArray(input)) {
+    if (Array.isArray(input)) {
       input = input[input.length - 1]
     }
 
-    this.labelFormat = input ||
-      this.opt('smallTimeFormat') // the computed default
+    this.labelFormat = createFormatter(input || {
+        hour: 'numeric',
+        minute: '2-digit',
+        omitZeroTime: true,
+        meridiem: 'short'
+    })
 
     input = this.opt('slotLabelInterval')
     this.labelInterval = input ?
-      moment.duration(input) :
+      createDuration(input) :
       this.computeLabelInterval(slotDuration)
   }
 
@@ -166,14 +192,14 @@ export default class TimeGrid extends InteractiveDateComponent {
 
     // find the smallest stock label interval that results in more than one slots-per-label
     for (i = AGENDA_STOCK_SUB_DURATIONS.length - 1; i >= 0; i--) {
-      labelInterval = moment.duration(AGENDA_STOCK_SUB_DURATIONS[i])
-      slotsPerLabel = divideDurationByDuration(labelInterval, slotDuration)
-      if (isInt(slotsPerLabel) && slotsPerLabel > 1) {
+      labelInterval = createDuration(AGENDA_STOCK_SUB_DURATIONS[i])
+      slotsPerLabel = wholeDivideDurations(labelInterval, slotDuration)
+      if (slotsPerLabel !== null && slotsPerLabel > 1) {
         return labelInterval
       }
     }
 
-    return moment.duration(slotDuration) // fall back. clone
+    return slotDuration // fall back
   }
 
 
@@ -181,8 +207,7 @@ export default class TimeGrid extends InteractiveDateComponent {
   ------------------------------------------------------------------------------------------------------------------*/
 
 
-  renderDates(dateProfile) {
-    this.dateProfile = dateProfile
+  renderDates() {
     this.updateDayTable()
     this.renderSlats()
     this.renderColumns()
@@ -190,83 +215,86 @@ export default class TimeGrid extends InteractiveDateComponent {
 
 
   unrenderDates() {
-    // this.unrenderSlats(); // don't need this because repeated .html() calls clear
     this.unrenderColumns()
+    // we don't unrender slats because won't change between date navigation,
+    // and if slat-related settings are changed, the whole component will be rerendered.
   }
 
 
   renderSkeleton() {
-    let theme = this.view.calendar.theme
+    let theme = this.getTheme()
 
-    this.el.html(
+    this.el.innerHTML =
       '<div class="fc-bg"></div>' +
       '<div class="fc-slats"></div>' +
       '<hr class="fc-divider ' + theme.getClass('widgetHeader') + '" style="display:none" />'
-    )
 
-    this.bottomRuleEl = this.el.find('hr')
+    this.rootBgContainerEl = this.el.querySelector('.fc-bg')
+    this.slatContainerEl = this.el.querySelector('.fc-slats')
+    this.bottomRuleEl = this.el.querySelector('.fc-divider')
   }
 
 
   renderSlats() {
-    let theme = this.view.calendar.theme
+    let theme = this.getTheme()
 
-    this.slatContainerEl = this.el.find('> .fc-slats')
-      .html( // avoids needing ::unrenderSlats()
-        '<table class="' + theme.getClass('tableGrid') + '">' +
-          this.renderSlatRowHtml() +
-        '</table>'
-      )
+    this.slatContainerEl.innerHTML =
+      '<table class="' + theme.getClass('tableGrid') + '">' +
+        this.renderSlatRowHtml() +
+      '</table>'
 
-    this.slatEls = this.slatContainerEl.find('tr')
+    this.slatEls = findElements(this.slatContainerEl, 'tr')
 
-    this.slatCoordCache = new CoordCache({
-      els: this.slatEls,
-      isVertical: true
-    })
+    this.slatPositions = new PositionCache(
+      this.el,
+      this.slatEls,
+      false,
+      true // vertical
+    )
   }
 
 
   // Generates the HTML for the horizontal "slats" that run width-wise. Has a time axis on a side. Depends on RTL.
   renderSlatRowHtml() {
     let view = this.view
-    let calendar = view.calendar
-    let theme = calendar.theme
-    let isRTL = this.isRTL
+    let dateEnv = this.getDateEnv()
+    let theme = this.getTheme()
+    let isRtl = this.isRtl
     let dateProfile = this.dateProfile
     let html = ''
-    let slotTime = moment.duration(+dateProfile.minTime) // wish there was .clone() for durations
-    let slotIterator = moment.duration(0)
+    let dayStart = startOfDay(dateProfile.renderRange.start)
+    let slotTime = dateProfile.minTime
+    let slotIterator = createDuration(0)
     let slotDate // will be on the view's first day, but we only care about its time
     let isLabeled
     let axisHtml
 
     // Calculate the time for each slot
-    while (slotTime < dateProfile.maxTime) {
-      slotDate = calendar.msToUtcMoment(dateProfile.renderUnzonedRange.startMs).time(slotTime)
-      isLabeled = isInt(divideDurationByDuration(slotIterator, this.labelInterval))
+    while (asRoughMs(slotTime) < asRoughMs(dateProfile.maxTime)) {
+      slotDate = dateEnv.add(dayStart, slotTime)
+      isLabeled = wholeDivideDurations(slotIterator, this.labelInterval) !== null
 
       axisHtml =
         '<td class="fc-axis fc-time ' + theme.getClass('widgetContent') + '" ' + view.axisStyleAttr() + '>' +
           (isLabeled ?
             '<span>' + // for matchCellWidths
-              htmlEscape(slotDate.format(this.labelFormat)) +
+              htmlEscape(dateEnv.format(slotDate, this.labelFormat)) +
             '</span>' :
             ''
             ) +
         '</td>'
 
       html +=
-        '<tr data-time="' + slotDate.format('HH:mm:ss') + '"' +
+        '<tr data-time="' + formatIsoTimeString(slotDate) + '"' +
           (isLabeled ? '' : ' class="fc-minor"') +
           '>' +
-          (!isRTL ? axisHtml : '') +
-          '<td class="' + theme.getClass('widgetContent') + '"/>' +
-          (isRTL ? axisHtml : '') +
+          (!isRtl ? axisHtml : '') +
+          '<td class="' + theme.getClass('widgetContent') + '"></td>' +
+          (isRtl ? axisHtml : '') +
         '</tr>'
 
-      slotTime.add(this.slotDuration)
-      slotIterator.add(this.slotDuration)
+      slotTime = addDurations(slotTime, this.slotDuration)
+      slotIterator = addDurations(slotIterator, this.slotDuration)
     }
 
     return html
@@ -275,31 +303,33 @@ export default class TimeGrid extends InteractiveDateComponent {
 
   renderColumns() {
     let dateProfile = this.dateProfile
-    let theme = this.view.calendar.theme
+    let theme = this.getTheme()
+    let dateEnv = this.getDateEnv()
 
     this.dayRanges = this.dayDates.map(function(dayDate) {
-      return new UnzonedRange(
-        dayDate.clone().add(dateProfile.minTime),
-        dayDate.clone().add(dateProfile.maxTime)
-      )
+      return {
+        start: dateEnv.add(dayDate, dateProfile.minTime),
+        end: dateEnv.add(dayDate, dateProfile.maxTime)
+      }
     })
 
     if (this.headContainerEl) {
-      this.headContainerEl.html(this.renderHeadHtml())
+      this.headContainerEl.innerHTML = this.renderHeadHtml()
     }
 
-    this.el.find('> .fc-bg').html(
+    this.rootBgContainerEl.innerHTML =
       '<table class="' + theme.getClass('tableGrid') + '">' +
         this.renderBgTrHtml(0) + // row=0
       '</table>'
+
+    this.colEls = findElements(this.el, '.fc-day, .fc-disabled-day')
+
+    this.colPositions = new PositionCache(
+      this.el,
+      this.colEls,
+      true, // horizontal
+      false
     )
-
-    this.colEls = this.el.find('.fc-day, .fc-disabled-day')
-
-    this.colCoordCache = new CoordCache({
-      els: this.colEls,
-      isHorizontal: true
-    })
 
     this.renderContentSkeleton()
   }
@@ -318,13 +348,13 @@ export default class TimeGrid extends InteractiveDateComponent {
   renderContentSkeleton() {
     let cellHtml = ''
     let i
-    let skeletonEl
+    let skeletonEl: HTMLElement
 
     for (i = 0; i < this.colCnt; i++) {
       cellHtml +=
         '<td>' +
           '<div class="fc-content-col">' +
-            '<div class="fc-event-container fc-helper-container"></div>' +
+            '<div class="fc-event-container fc-mirror-container"></div>' +
             '<div class="fc-event-container"></div>' +
             '<div class="fc-highlight-container"></div>' +
             '<div class="fc-bgevent-container"></div>' +
@@ -333,7 +363,7 @@ export default class TimeGrid extends InteractiveDateComponent {
         '</td>'
     }
 
-    skeletonEl = this.contentSkeletonEl = $(
+    skeletonEl = this.contentSkeletonEl = htmlToElement(
       '<div class="fc-content-skeleton">' +
         '<table>' +
           '<tr>' + cellHtml + '</tr>' +
@@ -341,29 +371,20 @@ export default class TimeGrid extends InteractiveDateComponent {
       '</div>'
     )
 
-    this.colContainerEls = skeletonEl.find('.fc-content-col')
-    this.helperContainerEls = skeletonEl.find('.fc-helper-container')
-    this.fgContainerEls = skeletonEl.find('.fc-event-container:not(.fc-helper-container)')
-    this.bgContainerEls = skeletonEl.find('.fc-bgevent-container')
-    this.highlightContainerEls = skeletonEl.find('.fc-highlight-container')
-    this.businessContainerEls = skeletonEl.find('.fc-business-container')
+    this.colContainerEls = findElements(skeletonEl, '.fc-content-col')
+    this.mirrorContainerEls = findElements(skeletonEl, '.fc-mirror-container')
+    this.fgContainerEls = findElements(skeletonEl, '.fc-event-container:not(.fc-mirror-container)')
+    this.bgContainerEls = findElements(skeletonEl, '.fc-bgevent-container')
+    this.highlightContainerEls = findElements(skeletonEl, '.fc-highlight-container')
+    this.businessContainerEls = findElements(skeletonEl, '.fc-business-container')
 
-    this.bookendCells(skeletonEl.find('tr')) // TODO: do this on string level
-    this.el.append(skeletonEl)
+    this.bookendCells(skeletonEl.querySelector('tr')) // TODO: do this on string level
+    this.el.appendChild(skeletonEl)
   }
 
 
   unrenderContentSkeleton() {
-    if (this.contentSkeletonEl) { // defensive :(
-      this.contentSkeletonEl.remove()
-      this.contentSkeletonEl = null
-      this.colContainerEls = null
-      this.helperContainerEls = null
-      this.fgContainerEls = null
-      this.bgContainerEls = null
-      this.highlightContainerEls = null
-      this.businessContainerEls = null
-    }
+    removeElement(this.contentSkeletonEl)
   }
 
 
@@ -386,7 +407,7 @@ export default class TimeGrid extends InteractiveDateComponent {
 
   // Given segments grouped by column, insert the segments' elements into a parallel array of container
   // elements, each living within a column.
-  attachSegsByCol(segsByCol, containerEls) {
+  attachSegsByCol(segsByCol, containerEls: HTMLElement[]) {
     let col
     let segs
     let i
@@ -395,7 +416,7 @@ export default class TimeGrid extends InteractiveDateComponent {
       segs = segsByCol[col]
 
       for (i = 0; i < segs.length; i++) {
-        containerEls.eq(col).append(segs[i].el)
+        containerEls[col].appendChild(segs[i].el)
       }
     }
   }
@@ -419,37 +440,37 @@ export default class TimeGrid extends InteractiveDateComponent {
 
     // seg system might be overkill, but it handles scenario where line needs to be rendered
     //  more than once because of columns with the same date (resources columns for example)
-    let segs = this.componentFootprintToSegs(
-      new ComponentFootprint(
-        new UnzonedRange(date, date.valueOf() + 1), // protect against null range
-        false // all-day
-      )
-    )
-    let top = this.computeDateTop(date, date)
+    let segs = this.rangeToSegs({
+      start: date,
+      end: addMs(date, 1) // protect against null range
+    })
+    let top = this.computeDateTop(date)
     let nodes = []
     let i
 
     // render lines within the columns
     for (i = 0; i < segs.length; i++) {
-      nodes.push($('<div class="fc-now-indicator fc-now-indicator-line"></div>')
-        .css('top', top)
-        .appendTo(this.colContainerEls.eq(segs[i].col))[0])
+      let lineEl = createElement('div', { className: 'fc-now-indicator fc-now-indicator-line' })
+      lineEl.style.top = top + 'px'
+      this.colContainerEls[segs[i].col].appendChild(lineEl)
+      nodes.push(lineEl)
     }
 
     // render an arrow over the axis
     if (segs.length > 0) { // is the current time in view?
-      nodes.push($('<div class="fc-now-indicator fc-now-indicator-arrow"></div>')
-        .css('top', top)
-        .appendTo(this.el.find('.fc-content-skeleton'))[0])
+      let arrowEl = createElement('div', { className: 'fc-now-indicator fc-now-indicator-arrow' })
+      arrowEl.style.top = top + 'px'
+      this.contentSkeletonEl.appendChild(arrowEl)
+      nodes.push(arrowEl)
     }
 
-    this.nowIndicatorEls = $(nodes)
+    this.nowIndicatorEls = nodes
   }
 
 
   unrenderNowIndicator() {
     if (this.nowIndicatorEls) {
-      this.nowIndicatorEls.remove()
+      this.nowIndicatorEls.forEach(removeElement)
       this.nowIndicatorEls = null
     }
   }
@@ -459,41 +480,26 @@ export default class TimeGrid extends InteractiveDateComponent {
   ------------------------------------------------------------------------------------------------------------------*/
 
 
-  updateSize(totalHeight, isAuto, isResize) {
-    super.updateSize(totalHeight, isAuto, isResize)
-
-    this.slatCoordCache.build()
-
-    if (isResize) {
-      this.updateSegVerticals(
-        [].concat(this.eventRenderer.getSegs(), this.businessSegs || [])
-      )
-    }
-  }
-
-
   getTotalSlatHeight() {
-    return this.slatContainerEl.outerHeight()
+    return this.slatContainerEl.offsetHeight
   }
 
 
   // Computes the top coordinate, relative to the bounds of the grid, of the given date.
-  // `ms` can be a millisecond UTC time OR a UTC moment.
   // A `startOfDayDate` must be given for avoiding ambiguity over how to treat midnight.
-  computeDateTop(ms, startOfDayDate) {
-    return this.computeTimeTop(
-      moment.duration(
-        ms - startOfDayDate.clone().stripTime()
-      )
-    )
+  computeDateTop(when: DateMarker, startOfDayDate?: DateMarker) {
+    if (!startOfDayDate) {
+      startOfDayDate = startOfDay(when)
+    }
+    return this.computeTimeTop(when.valueOf() - startOfDayDate.valueOf())
   }
 
 
   // Computes the top coordinate, relative to the bounds of the grid, of the given time (a Duration).
-  computeTimeTop(time) {
+  computeTimeTop(timeMs: number) {
     let len = this.slatEls.length
     let dateProfile = this.dateProfile
-    let slatCoverage = (time - dateProfile.minTime) / this.slotDuration // floating-point value of # of slots covered
+    let slatCoverage = (timeMs - asRoughMs(dateProfile.minTime)) / asRoughMs(this.slotDuration) // floating-point value of # of slots covered
     let slatIndex
     let slatRemainder
 
@@ -512,16 +518,8 @@ export default class TimeGrid extends InteractiveDateComponent {
     // could be 1.0 if slatCoverage is covering *all* the slots
     slatRemainder = slatCoverage - slatIndex
 
-    return this.slatCoordCache.getTopPosition(slatIndex) +
-      this.slatCoordCache.getHeight(slatIndex) * slatRemainder
-  }
-
-
-  // Refreshes the CSS top/bottom coordinates for each segment element.
-  // Works when called after initial render, after a window resize/zoom for example.
-  updateSegVerticals(segs) {
-    this.computeSegVerticals(segs)
-    this.assignSegVerticals(segs)
+    return this.slatPositions.tops[slatIndex] +
+      this.slatPositions.getHeight(slatIndex) * slatRemainder
   }
 
 
@@ -536,10 +534,10 @@ export default class TimeGrid extends InteractiveDateComponent {
       seg = segs[i]
       dayDate = this.dayDates[seg.dayIndex]
 
-      seg.top = this.computeDateTop(seg.startMs, dayDate)
+      seg.top = this.computeDateTop(seg.start, dayDate)
       seg.bottom = Math.max(
         seg.top + eventMinHeight,
-        this.computeDateTop(seg.endMs, dayDate)
+        this.computeDateTop(seg.end, dayDate)
       )
     }
   }
@@ -553,7 +551,7 @@ export default class TimeGrid extends InteractiveDateComponent {
 
     for (i = 0; i < segs.length; i++) {
       seg = segs[i]
-      seg.el.css(this.generateSegVerticalCss(seg))
+      applyStyle(seg.el, this.generateSegVerticalCss(seg))
     }
   }
 
@@ -567,110 +565,73 @@ export default class TimeGrid extends InteractiveDateComponent {
   }
 
 
+  /* Sizing
+  ------------------------------------------------------------------------------------------------------------------*/
+
+
+  buildPositionCaches() {
+    this.colPositions.build()
+    this.slatPositions.build()
+  }
+
+
   /* Hit System
   ------------------------------------------------------------------------------------------------------------------*/
 
 
   prepareHits() {
-    this.colCoordCache.build()
-    this.slatCoordCache.build()
+    this.offsetTracker = new OffsetTracker(this.el)
   }
 
 
   releaseHits() {
-    this.colCoordCache.clear()
-    // NOTE: don't clear slatCoordCache because we rely on it for computeTimeTop
+    this.offsetTracker.destroy()
   }
 
 
-  queryHit(leftOffset, topOffset): any {
-    let snapsPerSlot = this.snapsPerSlot
-    let colCoordCache = this.colCoordCache
-    let slatCoordCache = this.slatCoordCache
+  queryHit(leftOffset, topOffset): Hit {
+    let { snapsPerSlot, slatPositions, colPositions, offsetTracker } = this
 
-    if (colCoordCache.isLeftInBounds(leftOffset) && slatCoordCache.isTopInBounds(topOffset)) {
-      let colIndex = colCoordCache.getHorizontalIndex(leftOffset)
-      let slatIndex = slatCoordCache.getVerticalIndex(topOffset)
+    if (offsetTracker.isWithinClipping(leftOffset, topOffset)) {
+      let leftOrigin = offsetTracker.computeLeft()
+      let topOrigin = offsetTracker.computeTop()
+      let colIndex = colPositions.leftToIndex(leftOffset - leftOrigin)
+      let slatIndex = slatPositions.topToIndex(topOffset - topOrigin)
 
       if (colIndex != null && slatIndex != null) {
-        let slatTop = slatCoordCache.getTopOffset(slatIndex)
-        let slatHeight = slatCoordCache.getHeight(slatIndex)
+        let slatTop = slatPositions.tops[slatIndex] + topOrigin
+        let slatHeight = slatPositions.getHeight(slatIndex)
         let partial = (topOffset - slatTop) / slatHeight // floating point number between 0 and 1
         let localSnapIndex = Math.floor(partial * snapsPerSlot) // the snap # relative to start of slat
         let snapIndex = slatIndex * snapsPerSlot + localSnapIndex
-        let snapTop = slatTop + (localSnapIndex / snapsPerSlot) * slatHeight
-        let snapBottom = slatTop + ((localSnapIndex + 1) / snapsPerSlot) * slatHeight
+
+        let dayDate = this.getCellDate(0, colIndex) // row=0
+        let time = addDurations(
+          this.dateProfile.minTime,
+          multiplyDuration(this.snapDuration, snapIndex)
+        )
+
+        let dateEnv = this.getDateEnv()
+        let start = dateEnv.add(dayDate, time)
+        let end = dateEnv.add(start, this.snapDuration)
 
         return {
-          col: colIndex,
-          snap: snapIndex,
-          component: this, // needed unfortunately :(
-          left: colCoordCache.getLeftOffset(colIndex),
-          right: colCoordCache.getRightOffset(colIndex),
-          top: snapTop,
-          bottom: snapBottom
+          component: this,
+          dateSpan: {
+            range: { start, end },
+            isAllDay: false
+          },
+          dayEl: this.colEls[colIndex],
+          rect: {
+            left: colPositions.lefts[colIndex] + leftOrigin,
+            right: colPositions.rights[colIndex] + leftOrigin,
+            top: slatTop,
+            bottom: slatTop + slatHeight
+          },
+          layer: 0
         }
       }
     }
-  }
-
-
-  getHitFootprint(hit) {
-    let start = this.getCellDate(0, hit.col) // row=0
-    let time = this.computeSnapTime(hit.snap) // pass in the snap-index
-    let end
-
-    start.time(time)
-    end = start.clone().add(this.snapDuration)
-
-    return new ComponentFootprint(
-      new UnzonedRange(start, end),
-      false // all-day?
-    )
-  }
-
-
-  // Given a row number of the grid, representing a "snap", returns a time (Duration) from its start-of-day
-  computeSnapTime(snapIndex) {
-    return moment.duration(this.dateProfile.minTime + this.snapDuration * snapIndex)
-  }
-
-
-  getHitEl(hit) {
-    return this.colEls.eq(hit.col)
-  }
-
-
-  /* Event Drag Visualization
-  ------------------------------------------------------------------------------------------------------------------*/
-
-
-  // Renders a visual indication of an event being dragged over the specified date(s).
-  // A returned value of `true` signals that a mock "helper" event has been rendered.
-  renderDrag(eventFootprints, seg, isTouch) {
-    let i
-
-    if (seg) { // if there is event information for this drag, render a helper event
-
-      if (eventFootprints.length) {
-        this.helperRenderer.renderEventDraggingFootprints(eventFootprints, seg, isTouch)
-
-        // signal that a helper has been rendered
-        return true
-      }
-    } else { // otherwise, just render a highlight
-
-      for (i = 0; i < eventFootprints.length; i++) {
-        this.renderHighlight(eventFootprints[i].componentFootprint)
-      }
-    }
-  }
-
-
-  // Unrenders any visual indication of an event being dragged
-  unrenderDrag() {
-    this.unrenderHighlight()
-    this.helperRenderer.unrender()
   }
 
 
@@ -679,14 +640,18 @@ export default class TimeGrid extends InteractiveDateComponent {
 
 
   // Renders a visual indication of an event being resized
-  renderEventResize(eventFootprints, seg, isTouch) {
-    this.helperRenderer.renderEventResizingFootprints(eventFootprints, seg, isTouch)
+  renderEventResize(eventStore: EventStore, eventUis: EventUiHash, origSeg) {
+    let segs = this.eventRangesToSegs(
+      this.eventStoreToRanges(eventStore, eventUis)
+    )
+
+    this.mirrorRenderer.renderEventResizingSegs(segs, origSeg)
   }
 
 
   // Unrenders any visual indication of an event being resized
   unrenderEventResize() {
-    this.helperRenderer.unrender()
+    this.mirrorRenderer.unrender()
   }
 
 
@@ -695,27 +660,25 @@ export default class TimeGrid extends InteractiveDateComponent {
 
 
   // Renders a visual indication of a selection. Overrides the default, which was to simply render a highlight.
-  renderSelectionFootprint(componentFootprint) {
-    if (this.opt('selectHelper')) { // this setting signals that a mock helper event should be rendered
-      this.helperRenderer.renderComponentFootprint(componentFootprint)
+  renderDateSelection(selection: DateSpan) {
+    if (this.opt('selectMirror')) {
+      this.mirrorRenderer.renderEventSegs(this.selectionToSegs(selection, true))
     } else {
-      this.renderHighlight(componentFootprint)
+      this.renderHighlightSegs(this.selectionToSegs(selection, false))
     }
   }
 
 
   // Unrenders any visual indication of a selection
-  unrenderSelection() {
-    this.helperRenderer.unrender()
+  unrenderDateSelection() {
+    this.mirrorRenderer.unrender()
     this.unrenderHighlight()
   }
 
 }
 
 TimeGrid.prototype.eventRendererClass = TimeGridEventRenderer
-TimeGrid.prototype.businessHourRendererClass = BusinessHourRenderer
-TimeGrid.prototype.helperRendererClass = TimeGridHelperRenderer
+TimeGrid.prototype.mirrorRendererClass = TimeGridMirrorRenderer
 TimeGrid.prototype.fillRendererClass = TimeGridFillRenderer
 
-StandardInteractionsMixin.mixInto(TimeGrid)
 DayTableMixin.mixInto(TimeGrid)

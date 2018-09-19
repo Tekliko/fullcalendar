@@ -1,7 +1,6 @@
 import * as EventResizeUtils from './EventResizeUtils'
 import * as DayGridRenderUtils from '../view-render/DayGridRenderUtils'
 
-
 describe('validRange event resizing', function() {
 
   describe('when in month view', function() {
@@ -15,14 +14,14 @@ describe('validRange event resizing', function() {
       editable: true
     })
 
-    pit('won\'t go after validRange', function() {
+    it('won\'t go after validRange', function(done) {
       initCalendar()
-      return EventResizeUtils.resize(
-        DayGridRenderUtils.getSingleDayEl('2017-06-06')[0].getBoundingClientRect(),
-        DayGridRenderUtils.getDisabledEl(0)[0].getBoundingClientRect() // where Jun 9th would be
+      EventResizeUtils.resize(
+        DayGridRenderUtils.getDayEl('2017-06-06')[0].getBoundingClientRect(),
+        DayGridRenderUtils.getDisabledDayElAtIndex(0)[0].getBoundingClientRect() // where Jun 9th would be
       ).then(function(res) {
-        expect(res.isSuccess).toBe(false)
-      })
+        expect(res).toBe(false)
+      }).then(done)
     })
   })
 })

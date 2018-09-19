@@ -1,32 +1,22 @@
 
-// Jasmine Enhancements
-// ---------------------------------------------------------------------------------------------------------------------
-
-// like `it`, but with the ability to return a promise
-window.pit = function(description, runFunc) {
-  it(description, function(done) {
-    runFunc().then(done)
-  })
-}
-
-
 // Setup / Teardown
 // ---------------------------------------------------------------------------------------------------------------------
 
-window.optionsStack = null
-window.currentCalendar = null
+var optionsStack = null
 
 
 beforeEach(function() {
-  window.optionsStack = []
+  optionsStack = []
 })
 
 afterEach(function() {
-  window.optionsStack = null
+  optionsStack = null
+
   if (window.currentCalendar) {
     window.currentCalendar.destroy()
     window.currentCalendar = null
   }
+
   $('#calendar').remove()
 })
 
@@ -36,7 +26,7 @@ afterEach(function() {
 
 window.pushOptions = function(options) {
   beforeEach(function() {
-    return window.optionsStack.push(options)
+    return optionsStack.push(options)
   })
 }
 
@@ -47,17 +37,16 @@ window.spyOnCalendarCallback = function(name, func) {
   options[name] = func
   spyOn(options, name).and.callThrough()
 
-  window.optionsStack.push(options)
+  optionsStack.push(options)
 
   return options[name]
 }
 
 window.initCalendar = function(options, el) {
-  var Calendar = $.fullCalendar.Calendar
   var $el
 
   if (options) {
-    window.optionsStack.push(options)
+    optionsStack.push(options)
   }
 
   if (el) {
@@ -66,13 +55,28 @@ window.initCalendar = function(options, el) {
     $el = $('<div id="calendar">').appendTo('body')
   }
 
-  window.currentCalendar = new Calendar($el, getCurrentOptions()) // set the global
+  if (window.currentCalendar) {
+    window.currentCalendar.destroy()
+  }
 
-  return window.currentCalendar.render()
+  var options = getCurrentOptions()
+  var newCalendar
+
+  options.SET_DATE_PROFILE = function() {
+    newCalendar = window.currentCalendar = this
+  }
+
+  new FullCalendar.Calendar($el[0], options)
+
+  if (newCalendar === window.currentCalendar) {
+    newCalendar.render()
+  } else {
+    newCalendar.destroy()
+  }
 }
 
 window.getCurrentOptions = function() {
-  return $.extend.apply($, [ {} ].concat(window.optionsStack))
+  return $.extend.apply($, [ {} ].concat(optionsStack))
 }
 
 
@@ -119,48 +123,50 @@ window.describeValues = function(hash, callback) {
 
 // Timezone Tests (needed?)
 // ---------------------------------------------------------------------------------------------------------------------
+// NOTE:
+// new Date('YYYY-MM-DD') --- parsed as UTC
+// new Date('YYYY-MM-DDT00:00:00') --- parsed as local
 
-const timezoneScenarios = {
-  none: {
-    description: 'when no timezone',
-    value: null,
-    moment: function(str) {
-      return $.fullCalendar.moment.parseZone(str)
-    }
-  },
+const timeZoneScenarios = {
   local: {
     description: 'when local timezone',
     value: 'local',
-    moment: function(str) {
-      return moment(str)
+    createDate: function(str) {
+      if (str.length <= 10) { // doesn't have a time part?
+        str += 'T00:00:00' // will force it to parse as local
+      }
+      return new Date(str)
     }
   },
   UTC: {
     description: 'when UTC timezone',
     value: 'UTC',
-    moment: function(str) {
-      return moment.utc(str)
+    createDate: function(str) {
+      if (str.length > 10) { // has a time part?
+        str += 'Z' // will force it to parse as UTC
+      }
+      return new Date(str)
     }
   }
 }
 
-window.describeTimezones = function(callback) {
-  $.each(timezoneScenarios, function(name, scenario) {
+window.describeTimeZones = function(callback) {
+  $.each(timeZoneScenarios, function(name, scenario) {
     describe(scenario.description, function() {
       pushOptions({
-        timezone: name
+        timeZone: name
       })
       callback(scenario)
     })
   })
 }
 
-window.describeTimezone = function(name, callback) {
-  var scenario = timezoneScenarios[name]
+window.describeTimeZone = function(name, callback) {
+  var scenario = timeZoneScenarios[name]
 
   describe(scenario.description, function() {
     pushOptions({
-      timezone: name
+      timeZone: name
     })
     callback(scenario)
   })
@@ -210,3 +216,15 @@ window.spyCall = function(func) {
   spyOn(obj, 'func').and.callThrough()
   return obj.func
 }
+
+
+// Defaults that apply to all tests
+// ---------------------------------------------------------------------------------------------------------------------
+
+window.pushOptions({
+  timeZone: 'UTC'
+})
+
+// clear what plugins do. will take affect for all calendars, not just those via initCalendar()
+FullCalendar.globalDefaults.timeZoneImpl = null
+FullCalendar.globalDefaults.cmdFormatter = null

@@ -37,7 +37,8 @@ gulp.task('lint:js:built', [ 'webpack' ], function() {
       eslint({ // only checks that globals are properly accessed
         parserOptions: { 'ecmaVersion': 3 }, // for IE9
         envs: [ 'browser', 'commonjs', 'amd' ],
-        rules: { 'no-undef': 2 }
+        rules: { 'no-undef': 2 },
+        globals: [ 'Promise', 'ActiveXObject' ] // for superagent
       })
     )
     .pipe(eslint.format())
@@ -68,21 +69,22 @@ gulp.task('lint:js:tests', function() {
         configFile: 'eslint.json',
         envs: [ 'browser', 'jasmine', 'jquery' ],
         globals: [
+          'FullCalendar',
           'moment',
           'karmaConfig',
           'pushOptions',
           'describeOptions',
-          'describeTimezones',
+          'describeTimeZones',
           'describeValues',
           'pit',
-          'affix',
           'getCurrentOptions',
           'initCalendar',
           'currentCalendar',
           'spyOnMethod',
           'spyOnCalendarCallback',
           'spyCall',
-          'oneCall'
+          'oneCall',
+          'XHRMock'
         ]
       })
     )

@@ -1,9 +1,9 @@
-import * as $ from 'jquery'
+import { assignTo } from '../util/object'
 
 
 export default class Theme {
 
-  optionsManager: any
+  calendarOptions: any
 
   // settings. default values are set after the class
   classes: any
@@ -14,8 +14,8 @@ export default class Theme {
   iconOverridePrefix: string
 
 
-  constructor(optionsManager) {
-    this.optionsManager = optionsManager
+  constructor(calendarOptions) {
+    this.calendarOptions = calendarOptions
     this.processIconOverride()
   }
 
@@ -23,7 +23,7 @@ export default class Theme {
   processIconOverride() {
     if (this.iconOverrideOption) {
       this.setIconOverride(
-        this.optionsManager.get(this.iconOverrideOption)
+        this.calendarOptions[this.iconOverrideOption]
       )
     }
   }
@@ -33,8 +33,8 @@ export default class Theme {
     let iconClassesCopy
     let buttonName
 
-    if ($.isPlainObject(iconOverrideHash)) {
-      iconClassesCopy = $.extend({}, this.iconClasses)
+    if (typeof iconOverrideHash === 'object' && iconOverrideHash) { // non-null object
+      iconClassesCopy = assignTo({}, this.iconClasses)
 
       for (buttonName in iconOverrideHash) {
         iconClassesCopy[buttonName] = this.applyIconOverridePrefix(

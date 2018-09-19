@@ -1,77 +1,144 @@
-import * as $ from 'jquery'
-import { htmlEscape } from './util'
-
+import { htmlEscape } from './util/html'
+import { htmlToElement, appendToElement, findElements, createElement } from './util/dom-manip'
+import { default as Component, RenderForceFlags } from './component/Component'
 
 /* Toolbar with buttons and title
 ----------------------------------------------------------------------------------------------------------------------*/
 
-export default class Toolbar {
+export interface ToolbarRenderProps {
+  layout: any
+  title: string
+  activeButton: string
+  isTodayEnabled: boolean
+  isPrevEnabled: boolean
+  isNextEnabled: boolean
+}
+
+export default class Toolbar extends Component {
 
   calendar: any
-  toolbarOptions: any
-  el: any = null // mirrors local `el`
-  viewsWithButtons: any = []
+  el: HTMLElement = null
+  viewsWithButtons: any
+
+  isLayoutRendered: boolean
+  layout: any
+  title: string
+  activeButton: string
+  isTodayEnabled: boolean
+  isPrevEnabled: boolean
+  isNextEnabled: boolean
 
 
-  constructor(calendar, toolbarOptions) {
+  constructor(calendar, extraClassName) {
+    super()
     this.calendar = calendar
-    this.toolbarOptions = toolbarOptions
+    this.setElement(
+      createElement('div', { className: 'fc-toolbar ' + extraClassName })
+    )
   }
 
 
-  // method to update toolbar-specific options, not calendar-wide options
-  setToolbarOptions(newToolbarOptions) {
-    this.toolbarOptions = newToolbarOptions
+  render(renderProps: ToolbarRenderProps, forceFlags: RenderForceFlags) {
+
+    if (renderProps.layout !== this.layout || forceFlags === true) {
+      if (this.isLayoutRendered) {
+        this.unrenderLayout()
+      }
+      this.renderLayout(renderProps.layout)
+      this.layout = renderProps.layout
+      this.isLayoutRendered = true
+    }
+
+    if (renderProps.title !== this.title || forceFlags === true) {
+      this.updateTitle(renderProps.title)
+      this.title = renderProps.title
+    }
+
+    if (renderProps.activeButton !== this.activeButton || forceFlags === true) {
+      if (this.activeButton) {
+        this.deactivateButton(this.activeButton)
+      }
+      this.activateButton(renderProps.activeButton)
+      this.activeButton = renderProps.activeButton
+    }
+
+    if (renderProps.isTodayEnabled !== this.isTodayEnabled || forceFlags === true) {
+      if (renderProps.isTodayEnabled) {
+        this.enableButton('today')
+      } else {
+        this.disableButton('today')
+      }
+      this.isTodayEnabled = renderProps.isTodayEnabled
+    }
+
+    if (renderProps.isPrevEnabled !== this.isPrevEnabled || forceFlags === true) {
+      if (renderProps.isPrevEnabled) {
+        this.enableButton('prev')
+      } else {
+        this.disableButton('prev')
+      }
+      this.isPrevEnabled = renderProps.isPrevEnabled
+    }
+
+    if (renderProps.isNextEnabled !== this.isNextEnabled || forceFlags === true) {
+      if (renderProps.isNextEnabled) {
+        this.enableButton('next')
+      } else {
+        this.disableButton('next')
+      }
+      this.isNextEnabled = renderProps.isNextEnabled
+    }
   }
 
 
-  // can be called repeatedly and will rerender
-  render() {
-    let sections = this.toolbarOptions.layout
+  renderLayout(layout) {
     let el = this.el
 
-    if (sections) {
-      if (!el) {
-        el = this.el = $("<div class='fc-toolbar " + this.toolbarOptions.extraClasses + "'/>")
-      } else {
-        el.empty()
-      }
-      el.append(this.renderSection('left'))
-        .append(this.renderSection('right'))
-        .append(this.renderSection('center'))
-        .append('<div class="fc-clear"/>')
-    } else {
-      this.removeElement()
-    }
+    this.viewsWithButtons = []
+
+    appendToElement(el, this.renderSection('left', layout.left))
+    appendToElement(el, this.renderSection('right', layout.right))
+    appendToElement(el, this.renderSection('center', layout.center))
+    appendToElement(el, '<div class="fc-clear"></div>')
+  }
+
+
+  unrenderLayout() {
+    this.el.innerHTML = ''
   }
 
 
   removeElement() {
-    if (this.el) {
-      this.el.remove()
-      this.el = null
-    }
+    this.unrenderLayout()
+    this.isLayoutRendered = false
+    this.layout = null
+    this.title = null
+    this.activeButton = null
+    this.isTodayEnabled = null
+    this.isPrevEnabled = null
+    this.isNextEnabled = null
+
+    super.removeElement()
   }
 
 
-  renderSection(position) {
+  renderSection(position, buttonStr) {
     let calendar = this.calendar
     let theme = calendar.theme
     let optionsManager = calendar.optionsManager
     let viewSpecManager = calendar.viewSpecManager
-    let sectionEl = $('<div class="fc-' + position + '"/>')
-    let buttonStr = this.toolbarOptions.layout[position]
-    let calendarCustomButtons = optionsManager.get('customButtons') || {}
+    let sectionEl = createElement('div', { className: 'fc-' + position })
+    let calendarCustomButtons = optionsManager.computed.customButtons || {}
     let calendarButtonTextOverrides = optionsManager.overrides.buttonText || {}
-    let calendarButtonText = optionsManager.get('buttonText') || {}
+    let calendarButtonText = optionsManager.computed.buttonText || {}
 
     if (buttonStr) {
-      $.each(buttonStr.split(' '), (i, buttonGroupStr) => {
-        let groupChildren = $()
+      buttonStr.split(' ').forEach((buttonGroupStr, i) => {
+        let groupChildren = []
         let isOnlyButtons = true
         let groupEl
 
-        $.each(buttonGroupStr.split(','), (j, buttonName) => {
+        buttonGroupStr.split(',').forEach((buttonName, j) => {
           let customButtonProps
           let viewSpec
           let buttonClick
@@ -79,18 +146,18 @@ export default class Toolbar {
           let buttonText // "
           let buttonInnerHtml
           let buttonClasses
-          let buttonEl
+          let buttonEl: HTMLElement
           let buttonAriaAttr
 
           if (buttonName === 'title') {
-            groupChildren = groupChildren.add($('<h2>&nbsp;</h2>')) // we always want it to take up height
+            groupChildren.push(htmlToElement('<h2>&nbsp;</h2>')) // we always want it to take up height
             isOnlyButtons = false
           } else {
 
             if ((customButtonProps = calendarCustomButtons[buttonName])) {
               buttonClick = function(ev) {
                 if (customButtonProps.click) {
-                  customButtonProps.click.call(buttonEl[0], ev)
+                  customButtonProps.click.call(buttonEl, ev)
                 }
               };
               (buttonIcon = theme.getCustomButtonIconClass(customButtonProps)) ||
@@ -130,76 +197,108 @@ export default class Toolbar {
                 buttonAriaAttr = ' aria-label="' + buttonName + '"'
               }
 
-              buttonEl = $( // type="button" so that it doesn't submit a form
+              buttonEl = htmlToElement( // type="button" so that it doesn't submit a form
                 '<button type="button" class="' + buttonClasses.join(' ') + '"' +
                   buttonAriaAttr +
                 '>' + buttonInnerHtml + '</button>'
               )
-                .click(function(ev) {
-                  // don't process clicks for disabled buttons
-                  if (!buttonEl.hasClass(theme.getClass('stateDisabled'))) {
 
-                    buttonClick(ev)
+              let allowInteraction = function() {
+                const activeClassName = theme.getClass('stateActive')
+                const disabledClassName = theme.getClass('stateDisabled')
 
-                    // after the click action, if the button becomes the "active" tab, or disabled,
-                    // it should never have a hover class, so remove it now.
-                    if (
-                      buttonEl.hasClass(theme.getClass('stateActive')) ||
-                      buttonEl.hasClass(theme.getClass('stateDisabled'))
-                    ) {
-                      buttonEl.removeClass(theme.getClass('stateHover'))
-                    }
+                return (!activeClassName || !buttonEl.classList.contains(activeClassName)) &&
+                  (!disabledClassName || !buttonEl.classList.contains(disabledClassName))
+              }
+
+              buttonEl.addEventListener('click', function(ev) {
+                const disabledClassName = theme.getClass('stateDisabled')
+                const hoverClassName = theme.getClass('stateHover')
+
+                // don't process clicks for disabled buttons
+                if (!disabledClassName || !buttonEl.classList.contains(disabledClassName)) {
+
+                  buttonClick(ev)
+
+                  // after the click action, if the button becomes the "active" tab, or disabled,
+                  // it should never have a hover class, so remove it now.
+                  if (!allowInteraction() && hoverClassName) {
+                    buttonEl.classList.remove(hoverClassName)
                   }
-                })
-                .mousedown(function() {
-                  // the *down* effect (mouse pressed in).
-                  // only on buttons that are not the "active" tab, or disabled
-                  buttonEl
-                    .not('.' + theme.getClass('stateActive'))
-                    .not('.' + theme.getClass('stateDisabled'))
-                    .addClass(theme.getClass('stateDown'))
-                })
-                .mouseup(function() {
-                  // undo the *down* effect
-                  buttonEl.removeClass(theme.getClass('stateDown'))
-                })
-                .hover(
-                  function() {
-                    // the *hover* effect.
-                    // only on buttons that are not the "active" tab, or disabled
-                    buttonEl
-                      .not('.' + theme.getClass('stateActive'))
-                      .not('.' + theme.getClass('stateDisabled'))
-                      .addClass(theme.getClass('stateHover'))
-                  },
-                  function() {
-                    // undo the *hover* effect
-                    buttonEl
-                      .removeClass(theme.getClass('stateHover'))
-                      .removeClass(theme.getClass('stateDown')) // if mouseleave happens before mouseup
-                  }
-                )
+                }
+              })
 
-              groupChildren = groupChildren.add(buttonEl)
+              buttonEl.addEventListener('mousedown', function(ev) {
+                const downClassName = theme.getClass('stateDown')
+
+                // the *down* effect (mouse pressed in).
+                // only on buttons that are not the "active" tab, or disabled
+                if (allowInteraction() && downClassName) {
+                  buttonEl.classList.add(downClassName)
+                }
+              })
+
+              buttonEl.addEventListener('mouseup', function(ev) {
+                const downClassName = theme.getClass('stateDown')
+
+                // undo the *down* effect
+                if (downClassName) {
+                  buttonEl.classList.remove(downClassName)
+                }
+              })
+
+              buttonEl.addEventListener('mouseenter', function(ev) {
+                const hoverClassName = theme.getClass('stateHover')
+
+                // the *hover* effect.
+                // only on buttons that are not the "active" tab, or disabled
+                if (allowInteraction() && hoverClassName) {
+                  buttonEl.classList.add(hoverClassName)
+                }
+              })
+
+              buttonEl.addEventListener('mouseleave', function(ev) {
+                const hoverClassName = theme.getClass('stateHover')
+                const downClassName = theme.getClass('stateDown')
+
+                // undo the *hover* effect
+                if (hoverClassName) {
+                  buttonEl.classList.remove(hoverClassName)
+                }
+                if (downClassName) {
+                  buttonEl.classList.remove(downClassName) // if mouseleave happens before mouseup
+                }
+              })
+
+              groupChildren.push(buttonEl)
             }
           }
         })
 
-        if (isOnlyButtons) {
-          groupChildren
-            .first().addClass(theme.getClass('cornerLeft')).end()
-            .last().addClass(theme.getClass('cornerRight')).end()
+        if (isOnlyButtons && groupChildren.length > 0) {
+          let cornerLeftClassName = theme.getClass('cornerLeft')
+          let cornerRightClassName = theme.getClass('cornerRight')
+
+          if (cornerLeftClassName) {
+            groupChildren[0].classList.add(cornerLeftClassName)
+          }
+          if (cornerRightClassName) {
+            groupChildren[groupChildren.length - 1].classList.add(cornerRightClassName)
+          }
         }
 
         if (groupChildren.length > 1) {
-          groupEl = $('<div/>')
-          if (isOnlyButtons) {
-            groupEl.addClass(theme.getClass('buttonGroup'))
+          groupEl = document.createElement('div')
+
+          let buttonGroupClassName = theme.getClass('buttonGroup')
+          if (isOnlyButtons && buttonGroupClassName) {
+            groupEl.classList.add(buttonGroupClassName)
           }
-          groupEl.append(groupChildren)
-          sectionEl.append(groupEl)
+
+          appendToElement(groupEl, groupChildren)
+          sectionEl.appendChild(groupEl)
         } else {
-          sectionEl.append(groupChildren) // 1 or 0 children
+          appendToElement(sectionEl, groupChildren) // 1 or 0 children
         }
       })
     }
@@ -209,43 +308,39 @@ export default class Toolbar {
 
 
   updateTitle(text) {
-    if (this.el) {
-      this.el.find('h2').text(text)
-    }
+    findElements(this.el, 'h2').forEach(function(titleEl) {
+      titleEl.innerText = text
+    })
   }
 
 
   activateButton(buttonName) {
-    if (this.el) {
-      this.el.find('.fc-' + buttonName + '-button')
-        .addClass(this.calendar.theme.getClass('stateActive'))
-    }
+    findElements(this.el, '.fc-' + buttonName + '-button').forEach((buttonEl) => {
+      buttonEl.classList.add(this.calendar.theme.getClass('stateActive'))
+    })
   }
 
 
   deactivateButton(buttonName) {
-    if (this.el) {
-      this.el.find('.fc-' + buttonName + '-button')
-        .removeClass(this.calendar.theme.getClass('stateActive'))
-    }
+    findElements(this.el, '.fc-' + buttonName + '-button').forEach((buttonEl) => {
+      buttonEl.classList.remove(this.calendar.theme.getClass('stateActive'))
+    })
   }
 
 
   disableButton(buttonName) {
-    if (this.el) {
-      this.el.find('.fc-' + buttonName + '-button')
-        .prop('disabled', true)
-        .addClass(this.calendar.theme.getClass('stateDisabled'))
-    }
+    findElements(this.el, '.fc-' + buttonName + '-button').forEach((buttonEl: HTMLButtonElement) => {
+      buttonEl.disabled = true
+      buttonEl.classList.add(this.calendar.theme.getClass('stateDisabled'))
+    })
   }
 
 
   enableButton(buttonName) {
-    if (this.el) {
-      this.el.find('.fc-' + buttonName + '-button')
-        .prop('disabled', false)
-        .removeClass(this.calendar.theme.getClass('stateDisabled'))
-    }
+    findElements(this.el, '.fc-' + buttonName + '-button').forEach((buttonEl: HTMLButtonElement) => {
+      buttonEl.disabled = false
+      buttonEl.classList.remove(this.calendar.theme.getClass('stateDisabled'))
+    })
   }
 
 

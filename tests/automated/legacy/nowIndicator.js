@@ -3,7 +3,6 @@ import { isElWithinRtl } from '../lib/dom-misc'
 import { getTimeGridLine } from '../lib/time-grid'
 
 describe('now indicator', function() {
-  var FC = $.fullCalendar
   var options
 
   beforeEach(function() {
@@ -39,11 +38,11 @@ describe('now indicator', function() {
         options.nowIndicator = true
       });
 
-      [ false, true ].forEach(function(isRTL) {
+      [ false, true ].forEach(function(isRtl) {
 
-        describe('when ' + (isRTL ? 'RTL' : 'LTR'), function() {
+        describe('when ' + (isRtl ? 'RTL' : 'LTR'), function() {
           beforeEach(function() {
-            options.isRTL = isRTL
+            options.isRtl = isRtl
           })
 
           it('doesn\'t render when out of view', function() {
@@ -54,13 +53,13 @@ describe('now indicator', function() {
 
           it('renders on correct time', function() {
             initCalendar(options)
-            isNowIndicatorRenderedAt('2015-12-26T06:00:00')
+            isNowIndicatorRenderedAt('2015-12-26T06:00:00Z')
           })
 
           it('renders on correct time2', function() {
             options.now = '2015-12-20T02:30:00'
             initCalendar(options)
-            isNowIndicatorRenderedAt('2015-12-20T02:30:00')
+            isNowIndicatorRenderedAt('2015-12-20T02:30:00Z')
           })
         })
       })
@@ -70,7 +69,7 @@ describe('now indicator', function() {
     it('doesnt double render indicator arrow', function(done) {
 
       // force the indicator to update every second
-      var getNowIndicatorUnit = spyOnMethod(FC.TimeGrid, 'getNowIndicatorUnit', true)
+      var getNowIndicatorUnit = spyOnMethod(FullCalendar.TimeGrid, 'getNowIndicatorUnit', true)
         .and.returnValue('second')
 
       options.defaultDate = '2016-01-01' // does NOT have "now" in view

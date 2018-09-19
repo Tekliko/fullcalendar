@@ -29,7 +29,7 @@ describe('eventLimit popover', function() {
 
     it('aligns horizontally with left edge of cell if LTR', function() {
       initCalendar({
-        isRTL: false
+        isRtl: false
       })
       init()
       var cellLeft = $('.fc-day-grid .fc-row:eq(0) .fc-bg td:not(.fc-axis):eq(2)').offset().left
@@ -40,7 +40,7 @@ describe('eventLimit popover', function() {
 
     it('aligns horizontally with left edge of cell if RTL', function() {
       initCalendar({
-        isRTL: true
+        isRtl: true
       })
       init()
       var cell = $('.fc-day-grid .fc-row:eq(0) .fc-bg td:not(.fc-axis):eq(4)')
@@ -104,49 +104,49 @@ describe('eventLimit popover', function() {
             title: 'event01',
             start: '2012-03-22T11:00:00',
             end: '2012-03-22T11:30:00',
-            allDay: false
+            isAllDay: false
           },
           {
             id: '40607',
             title: 'event02',
             start: '2012-03-22T16:15:00',
             end: '2012-03-22T16:30:00',
-            allDay: false
+            isAllDay: false
           },
           {
             id: '40760',
             title: 'event03',
             start: '2012-03-22T16:00:00',
             end: '2012-03-22T16:15:00',
-            allDay: false
+            isAllDay: false
           },
           {
             id: '41284',
             title: 'event04',
             start: '2012-03-22T19:00:00',
             end: '2012-03-22T19:15:00',
-            allDay: false
+            isAllDay: false
           },
           {
             id: '41645',
             title: 'event05',
             start: '2012-03-22T11:30:00',
             end: '2012-03-22T12:00:00',
-            allDay: false
+            isAllDay: false
           },
           {
             id: '41679',
             title: 'event07',
             start: '2012-03-22T12:00:00',
             end: '2012-03-22T12:15:00',
-            allDay: false
+            isAllDay: false
           },
           {
             id: '42246',
             title: 'event08',
             start: '2012-03-22T16:45:00',
             end: '2012-03-22T17:00:00',
-            allDay: false
+            isAllDay: false
           }
         ]
       })
@@ -276,9 +276,9 @@ describe('eventLimit popover', function() {
       it('should have the new day and remain all-day', function(done) {
 
         initCalendar({
-          eventDrop: function(event) {
-            expect(event.start).toEqualMoment('2014-07-28')
-            expect(event.allDay).toBe(true)
+          eventDrop: function(arg) {
+            expect(arg.event.start).toEqualDate('2014-07-28')
+            expect(arg.event.isAllDay).toBe(true)
             done()
           }
         })
@@ -305,9 +305,9 @@ describe('eventLimit popover', function() {
 
         initCalendar({
           events: testEvents,
-          eventDrop: function(event) {
-            expect(event.start).toEqualMoment('2014-07-28T13:00:00')
-            expect(event.allDay).toBe(false)
+          eventDrop: function(arg) {
+            expect(arg.event.start).toEqualDate('2014-07-28T13:00:00Z')
+            expect(arg.event.isAllDay).toBe(false)
             done()
           }
         })
@@ -329,9 +329,9 @@ describe('eventLimit popover', function() {
         initCalendar({
           defaultView: 'agendaWeek',
           scrollTime: '00:00:00',
-          eventDrop: function(event) {
-            expect(event.start).toEqualMoment('2014-07-30T03:00:00')
-            expect(event.allDay).toBe(false)
+          eventDrop: function(arg) {
+            expect(arg.event.start).toEqualDate('2014-07-30T03:00:00Z')
+            expect(arg.event.isAllDay).toBe(false)
             done()
           }
         })
@@ -356,7 +356,7 @@ describe('eventLimit popover', function() {
 
         initCalendar({
           eventDragStop: function() {
-            setTimeout(function() { // try to wait until drag is over. eventDrop won't fire BTW
+            setTimeout(function() { // try to wait until drag is over. eventMutation won't fire BTW
               expect($('.fc-more-popover')).toBeInDOM()
               done()
             }, 0)
@@ -384,35 +384,35 @@ describe('eventLimit popover', function() {
         { title: 'event4', start: '2014-07-29', className: 'event4' }
       ],
       eventRender: function() {},
-      eventAfterRender: function() {},
-      eventAfterAllRender: function() {},
+      eventPositioned: function() {},
+      _eventsPositioned: function() {},
       eventDestroy: function() {}
     }
 
     spyOn(options, 'eventRender')
-    spyOn(options, 'eventAfterRender')
-    spyOn(options, 'eventAfterAllRender')
+    spyOn(options, 'eventPositioned')
+    spyOn(options, '_eventsPositioned')
     spyOn(options, 'eventDestroy')
 
     initCalendar(options)
 
     expect(options.eventRender.calls.count()).toBe(4)
-    expect(options.eventAfterRender.calls.count()).toBe(4)
-    expect(options.eventAfterAllRender.calls.count()).toBe(1)
+    expect(options.eventPositioned.calls.count()).toBe(4)
+    expect(options._eventsPositioned.calls.count()).toBe(1)
     expect(options.eventDestroy.calls.count()).toBe(0)
 
     $('.fc-more').simulate('click')
 
     expect(options.eventRender.calls.count()).toBe(8) // +4
-    expect(options.eventAfterRender.calls.count()).toBe(8) // +4
-    expect(options.eventAfterAllRender.calls.count()).toBe(1) // stays same!
+    expect(options.eventPositioned.calls.count()).toBe(8) // +4
+    expect(options._eventsPositioned.calls.count()).toBe(1) // stays same!
     expect(options.eventDestroy.calls.count()).toBe(0)
 
     $('.fc-more-popover .fc-close').simulate('click')
 
     expect(options.eventRender.calls.count()).toBe(8)
-    expect(options.eventAfterRender.calls.count()).toBe(8)
-    expect(options.eventAfterAllRender.calls.count()).toBe(1)
+    expect(options.eventPositioned.calls.count()).toBe(8)
+    expect(options._eventsPositioned.calls.count()).toBe(1)
     expect(options.eventDestroy.calls.count()).toBe(4) // +4
   })
 

@@ -11,8 +11,8 @@ describe('allDayDefault', function() {
           }
         ]
       })
-      var eventObj = currentCalendar.clientEvents('1')[0]
-      expect(eventObj.allDay).toEqual(false)
+      var eventObj = currentCalendar.getEventById('1')
+      expect(eventObj.isAllDay).toEqual(false)
     })
 
     it('guesses false if T in ISO8601 end date', function() {
@@ -25,8 +25,8 @@ describe('allDayDefault', function() {
           }
         ]
       })
-      var eventObj = currentCalendar.clientEvents('1')[0]
-      expect(eventObj.allDay).toEqual(false)
+      var eventObj = currentCalendar.getEventById('1')
+      expect(eventObj.isAllDay).toEqual(false)
     })
 
     it('guesses true if ISO8601 start date with no time and unspecified end date', function() {
@@ -38,8 +38,8 @@ describe('allDayDefault', function() {
           }
         ]
       })
-      var eventObj = currentCalendar.clientEvents('1')[0]
-      expect(eventObj.allDay).toEqual(true)
+      var eventObj = currentCalendar.getEventById('1')
+      expect(eventObj.isAllDay).toEqual(true)
     })
 
     it('guesses true if ISO8601 start and end date with no times', function() {
@@ -52,8 +52,8 @@ describe('allDayDefault', function() {
           }
         ]
       })
-      var eventObj = currentCalendar.clientEvents('1')[0]
-      expect(eventObj.allDay).toEqual(true)
+      var eventObj = currentCalendar.getEventById('1')
+      expect(eventObj.isAllDay).toEqual(true)
     })
 
     it('guesses false if start is a unix timestamp (which implies it has a time)', function() {
@@ -67,8 +67,8 @@ describe('allDayDefault', function() {
         ]
       })
 
-      var eventObj = currentCalendar.clientEvents('1')[0]
-      expect(eventObj.allDay).toEqual(false)
+      var eventObj = currentCalendar.getEventById('1')
+      expect(eventObj.isAllDay).toEqual(false)
     })
 
     it('guesses false if end is a unix timestamp (which implies it has a time)', function() {
@@ -81,8 +81,8 @@ describe('allDayDefault', function() {
           }
         ]
       })
-      var eventObj = currentCalendar.clientEvents('1')[0]
-      expect(eventObj.allDay).toEqual(false)
+      var eventObj = currentCalendar.getEventById('1')
+      expect(eventObj.isAllDay).toEqual(false)
     })
 
   })
@@ -99,8 +99,8 @@ describe('allDayDefault', function() {
           }
         ]
       })
-      var eventObj = currentCalendar.clientEvents('1')[0]
-      expect(eventObj.allDay).toEqual(false)
+      var eventObj = currentCalendar.getEventById('1')
+      expect(eventObj.isAllDay).toEqual(false)
     })
 
     it('has no effect when an event\'s allDay is specified', function() {
@@ -110,12 +110,12 @@ describe('allDayDefault', function() {
           {
             id: '1',
             start: '2014-05-01T00:00:00',
-            allDay: true
+            isAllDay: true
           }
         ]
       })
-      var eventObj = currentCalendar.clientEvents('1')[0]
-      expect(eventObj.allDay).toEqual(true)
+      var eventObj = currentCalendar.getEventById('1')
+      expect(eventObj.isAllDay).toEqual(true)
     })
 
   })
@@ -138,8 +138,8 @@ describe('source.allDayDefault', function() {
         }
       ]
     })
-    var eventObj = currentCalendar.clientEvents('1')[0]
-    expect(eventObj.allDay).toEqual(false)
+    var eventObj = currentCalendar.getEventById('1')
+    expect(eventObj.isAllDay).toEqual(false)
   })
 
   it('a true value can override the global allDayDefault', function() {
@@ -157,8 +157,8 @@ describe('source.allDayDefault', function() {
         }
       ]
     })
-    var eventObj = currentCalendar.clientEvents('1')[0]
-    expect(eventObj.allDay).toEqual(true)
+    var eventObj = currentCalendar.getEventById('1')
+    expect(eventObj.isAllDay).toEqual(true)
   })
 
   it('a false value can override the global allDayDefault', function() {
@@ -176,8 +176,8 @@ describe('source.allDayDefault', function() {
         }
       ]
     })
-    var eventObj = currentCalendar.clientEvents('1')[0]
-    expect(eventObj.allDay).toEqual(false)
+    var eventObj = currentCalendar.getEventById('1')
+    expect(eventObj.isAllDay).toEqual(false)
   })
 
   it('has no effect when an event\'s allDay is specified', function() {
@@ -189,14 +189,14 @@ describe('source.allDayDefault', function() {
             {
               id: '1',
               start: '2014-05-01',
-              allDay: false
+              isAllDay: false
             }
           ]
         }
       ]
     })
-    var eventObj = currentCalendar.clientEvents('1')[0]
-    expect(eventObj.allDay).toEqual(false)
+    var eventObj = currentCalendar.getEventById('1')
+    expect(eventObj.isAllDay).toEqual(false)
   })
 
 })

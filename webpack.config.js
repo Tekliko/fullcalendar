@@ -13,7 +13,11 @@ const MODULES = {
   'dist/fullcalendar': './src/main.ts',
   'dist/fullcalendar.css': './src/main.scss',
   'dist/fullcalendar.print.css': './src/common/print.scss',
-  'dist/gcal': './plugins/gcal/main.ts',
+  'dist/fullcalendar-gcal': './plugins/gcal/main.ts',
+  'dist/fullcalendar-moment': './plugins/moment/main.ts',
+  'dist/fullcalendar-moment-timezone': './plugins/moment-timezone/main.ts',
+  'dist/fullcalendar-luxon': './plugins/luxon/main.ts',
+  'dist/fullcalendar-rrule': './plugins/rrule/main.ts',
   'tmp/automated-tests': './tests/automated/index'
 }
 
@@ -27,17 +31,20 @@ module.exports = {
   entry: Object.assign({}, MODULES, generateLocaleMap()),
 
   externals: {
+    superagent: 'superagent',
+    moment: 'moment',
+    'moment-timezone': 'moment-timezone',
+    luxon: 'luxon',
+    rrule: 'rrule',
+    dragula: 'dragula',
+
+    // for plugins that might need jQuery
     jquery: {
       commonjs: 'jquery',
       commonjs2: 'jquery',
       amd: 'jquery',
       root: 'jQuery'
     },
-    moment: 'moment',
-
-    // moment locale files reference the moment lib with a relative require.
-    // use our external reference instead.
-    '../moment': 'moment',
 
     // plugins reference the root 'fullcalendar' namespace
     fullcalendar: {
@@ -108,14 +115,11 @@ function generateLocaleMap() {
   const map = {}
 
   glob.sync('locale/*.js').forEach(function(path) {
-    if (path !== 'locale/_reset.js') {
-      // strip out .js to get module name. also, path must start with ./
-      map['dist/' + path.replace(/\.js$/, '')] = './' + path
-    }
+    // strip out .js to get module name. also, path must start with ./
+    map['dist/' + path.replace(/\.js$/, '')] = './' + path
   })
 
   map['dist/locale-all'] = Object.values(map) // all locales combined
-    .concat([ './locale/_reset.js' ]) // for resetting back to English
 
   return map
 }

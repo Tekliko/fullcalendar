@@ -43,7 +43,6 @@ describe('eventLimitClick', function() { // simulate a click
       })
       $('.fc-more').simulate('click')
       var view = currentCalendar.getView()
-      expect(view.name).toBe('basicWeek') // .name should be deprecated
       expect(view.type).toBe('basicWeek')
     })
 
@@ -57,7 +56,6 @@ describe('eventLimitClick', function() { // simulate a click
       })
       $('.fc-more').simulate('click')
       var view = currentCalendar.getView()
-      expect(view.name).toBe('agendaWeek') // .name should be deprecated
       expect(view.type).toBe('agendaWeek')
     })
   })
@@ -78,7 +76,7 @@ describe('eventLimitClick', function() { // simulate a click
       })
       $('.fc-more').simulate('click')
       var view = currentCalendar.getView()
-      expect(view.name).toBe('basicDay')
+      expect(view.type).toBe('basicDay')
     })
 
     it('should go to agendaDay if it is one of the available views', function() {
@@ -91,7 +89,7 @@ describe('eventLimitClick', function() { // simulate a click
       })
       $('.fc-more').simulate('click')
       var view = currentCalendar.getView()
-      expect(view.name).toBe('agendaDay')
+      expect(view.type).toBe('agendaDay')
     })
   })
 
@@ -106,19 +104,19 @@ describe('eventLimitClick', function() { // simulate a click
     })
     $('.fc-more').simulate('click')
     var view = currentCalendar.getView()
-    expect(view.name).toBe('agendaWeek')
+    expect(view.type).toBe('agendaWeek')
   })
 
   it('works with custom function and all the arguments are correct', function() {
     initCalendar({
-      eventLimitClick: function(cellInfo, jsEvent) {
-        expect(typeof cellInfo).toBe('object')
-        expect(typeof jsEvent).toBe('object')
-        expect(cellInfo.date).toEqualMoment('2014-07-29')
-        expect(cellInfo.dayEl.data('date')).toBe('2014-07-29')
-        expect(cellInfo.hiddenSegs.length).toBe(2)
-        expect(cellInfo.segs.length).toBe(4)
-        expect(cellInfo.moreEl).toHaveClass('fc-more')
+      eventLimitClick: function(arg) {
+        expect(typeof arg).toBe('object')
+        expect(arg.date).toEqualDate('2014-07-29')
+        expect(arg.dayEl.getAttribute('data-date')).toBe('2014-07-29')
+        expect(arg.hiddenSegs.length).toBe(2)
+        expect(arg.segs.length).toBe(4)
+        expect(arg.moreEl).toHaveClass('fc-more')
+        expect(typeof arg.jsEvent).toBe('object')
       }
     })
     $('.fc-more').simulate('click')
@@ -132,7 +130,7 @@ describe('eventLimitClick', function() { // simulate a click
     })
     $('.fc-more').simulate('click')
     var view = currentCalendar.getView()
-    expect(view.name).toBe('agendaDay')
+    expect(view.type).toBe('agendaDay')
   })
 
 })

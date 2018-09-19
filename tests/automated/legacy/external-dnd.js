@@ -1,4 +1,4 @@
-import { countHandlers } from '../lib/dom-misc'
+import ListenerCounter from '../lib/ListenerCounter'
 
 describe('external drag and drop', function() {
 
@@ -6,6 +6,7 @@ describe('external drag and drop', function() {
 
   var doSortable
   var options
+  var thirdPartyDraggable
 
   beforeEach(function() {
     doSortable = false
@@ -22,11 +23,18 @@ describe('external drag and drop', function() {
       '<div id="cal" style="width:600px;position:absolute;top:10px;left:220px">' +
       '</div>'
     )
+
+    thirdPartyDraggable = new FullCalendar.ThirdPartyDraggable({
+      itemSelector: '#sidebar .fc-event'
+    })
   })
 
   afterEach(function() {
-    $('#cal').remove()
+    var el = currentCalendar.el
+    currentCalendar.destroy()
+    $(el).remove()
     $('#sidebar').remove()
+    thirdPartyDraggable.destroy()
   })
 
   function init() {
@@ -35,8 +43,7 @@ describe('external drag and drop', function() {
     } else {
       $('#sidebar a').draggable()
     }
-
-    $('#cal').fullCalendar(options)
+    initCalendar(options)
   }
 
   function getMonthCell(row, col) {
@@ -58,12 +65,12 @@ describe('external drag and drop', function() {
         it('works after the view is changed', function(done) { // issue 2240
           var callCnt = 0
 
-          options.drop = function(date, jsEvent, ui) {
+          options.drop = function(arg) {
             if (callCnt === 0) {
-              expect(date).toEqualMoment('2014-08-06')
+              expect(arg.date).toEqualDate('2014-08-06')
 
-              $('#cal').fullCalendar('next')
-              $('#cal').fullCalendar('prev')
+              currentCalendar.next()
+              currentCalendar.prev()
 
               setTimeout(function() {
                 $('#sidebar .event1').remove()
@@ -73,7 +80,7 @@ describe('external drag and drop', function() {
                 })
               }, 0)
             } else if (callCnt === 1) {
-              expect(date).toEqualMoment('2014-08-06')
+              expect(arg.date).toEqualDate('2014-08-06')
               done()
             }
             callCnt++
@@ -127,9 +134,8 @@ describe('external drag and drop', function() {
           })
 
           it('works with a filter function that returns true', function(done) {
-            options.dropAccept = function(jqEl) {
-              expect(typeof jqEl).toBe('object')
-              expect(jqEl.length).toBe(1)
+            options.dropAccept = function(el) {
+              expect(el instanceof HTMLElement).toBe(true)
               return true
             }
             options.drop = function() { }
@@ -149,9 +155,8 @@ describe('external drag and drop', function() {
           })
 
           it('prevents a drop with a filter function that returns false', function(done) {
-            options.dropAccept = function(jqEl) {
-              expect(typeof jqEl).toBe('object')
-              expect(jqEl.length).toBe(1)
+            options.dropAccept = function(el) {
+              expect(el instanceof HTMLElement).toBe(true)
               return false
             }
             options.drop = function() { }
@@ -183,12 +188,12 @@ describe('external drag and drop', function() {
         it('works after the view is changed', function(done) {
           var callCnt = 0
 
-          options.drop = function(date, jsEvent, ui) {
+          options.drop = function(arg) {
             if (callCnt === 0) {
-              expect(date).toEqualMoment('2014-08-20T01:00:00')
+              expect(arg.date).toEqualDate('2014-08-20T01:00:00Z')
 
-              $('#cal').fullCalendar('next')
-              $('#cal').fullCalendar('prev')
+              currentCalendar.next()
+              currentCalendar.prev()
 
               setTimeout(function() { // needed for IE8, for firing the second time, for some reason
                 $('#sidebar .event1').remove()
@@ -198,7 +203,7 @@ describe('external drag and drop', function() {
                 })
               }, 0)
             } else if (callCnt === 1) {
-              expect(date).toEqualMoment('2014-08-20T01:00:00')
+              expect(arg.date).toEqualDate('2014-08-20T01:00:00Z')
               done()
             }
             callCnt++
@@ -214,9 +219,9 @@ describe('external drag and drop', function() {
         })
 
         it('works with timezone as "local"', function(done) { // for issue 2225
-          options.timezone = 'local'
-          options.drop = function(date, jsEvent) {
-            expect(date).toEqualMoment(moment('2014-08-20T01:00:00')) // compate it to a local moment
+          options.timeZone = 'local'
+          options.drop = function(arg) {
+            expect(arg.date).toEqualDate('2014-08-20T01:00:00') // local
             done()
           }
 
@@ -230,9 +235,9 @@ describe('external drag and drop', function() {
         })
 
         it('works with timezone as "UTC"', function(done) { // for issue 2225
-          options.timezone = 'UTC'
-          options.drop = function(date, jsEvent) {
-            expect(date).toEqualMoment('2014-08-20T01:00:00+00:00')
+          options.timeZone = 'UTC'
+          options.drop = function(arg) {
+            expect(arg.date).toEqualDate('2014-08-20T01:00:00Z')
             done()
           }
 
@@ -284,9 +289,8 @@ describe('external drag and drop', function() {
           })
 
           it('works with a filter function that returns true', function(done) {
-            options.dropAccept = function(jqEl) {
-              expect(typeof jqEl).toBe('object')
-              expect(jqEl.length).toBe(1)
+            options.dropAccept = function(el) {
+              expect(el instanceof HTMLElement).toBe(true)
               return true
             }
             options.drop = function() { }
@@ -306,9 +310,8 @@ describe('external drag and drop', function() {
           })
 
           it('prevents a drop with a filter function that returns false', function(done) {
-            options.dropAccept = function(jqEl) {
-              expect(typeof jqEl).toBe('object')
-              expect(jqEl.length).toBe(1)
+            options.dropAccept = function(el) {
+              expect(el instanceof HTMLElement).toBe(true)
               return false
             }
             options.drop = function() { }
@@ -331,21 +334,19 @@ describe('external drag and drop', function() {
 
       // Issue 2433
       it('should not have drag handlers cleared when other calendar navigates', function() {
-
         init()
-        var el1 = $('#cal')
+        var el1 = currentCalendar.el
+        var el2 = $('<div id="calendar2">').insertAfter(el1)
+        var currentCalendar2 = new FullCalendar.Calendar(el2[0], options)
+        currentCalendar2.render()
 
-        $('#cal').after('<div id="cal2"/>')
-        var el2 = $('#cal2').fullCalendar(options)
+        var docListenerCounter = new ListenerCounter(document)
+        docListenerCounter.startWatching()
 
-        var beforeCnt = countHandlers(document)
-        var afterCnt
+        currentCalendar.next()
+        expect(docListenerCounter.stopWatching()).toBe(0)
 
-        el1.fullCalendar('next')
-        afterCnt = countHandlers(document)
-        expect(beforeCnt).toBe(afterCnt)
-
-        el1.remove()
+        currentCalendar2.destroy()
         el2.remove()
       })
     })

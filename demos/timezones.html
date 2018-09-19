@@ -4,20 +4,23 @@
 <meta charset='utf-8' />
 <link href='../dist/fullcalendar.css' rel='stylesheet' />
 <link href='../dist/fullcalendar.print.css' rel='stylesheet' media='print' />
-<script src='../node_modules/moment/moment.js'></script>
-<script src='../node_modules/jquery/dist/jquery.js'></script>
+<script src='../node_modules/superagent/superagent.js'></script>
 <script src='../dist/fullcalendar.js'></script>
 <script>
 
-  $(document).ready(function() {
+  document.addEventListener('DOMContentLoaded', function() {
+    var initialTimeZone = 'local';
+    var timeZoneSelectorEl = document.getElementById('timezone-selector');
+    var calendarEl = document.getElementById('calendar');
 
-    $('#calendar').fullCalendar({
+    var calendar = new FullCalendar.Calendar(calendarEl, {
+      timeZone: initialTimeZone,
       header: {
         left: 'prev,next today',
         center: 'title',
         right: 'month,agendaWeek,agendaDay,listWeek'
       },
-      defaultDate: '2018-03-12',
+      defaultDate: '2018-04-12',
       navLinks: true, // can click day/week names to navigate views
       editable: true,
       selectable: true,
@@ -25,42 +28,51 @@
       events: {
         url: 'php/get-events.php',
         error: function() {
-          $('#script-warning').show();
+          document.getElementById('script-warning').style.display = 'inline'; // show
         }
       },
       loading: function(bool) {
-        $('#loading').toggle(bool);
-      },
-      eventRender: function(event, el) {
-        // render the timezone offset below the event title
-        if (event.start.hasZone()) {
-          el.find('.fc-title').after(
-            $('<div class="tzo"/>').text(event.start.format('Z'))
-          );
+        if (bool) {
+          document.getElementById('loading').style.display = 'inline'; // show
+        } else {
+          document.getElementById('loading').style.display = 'none'; // hide
         }
       },
-      dayClick: function(date) {
-        console.log('dayClick', date.format());
+
+      eventTimeFormat: { hour: 'numeric', minute: '2-digit', timeZoneName: 'short' },
+      // TODO: once event API is better:
+      // eventRender: function(event, el) {
+      // },
+
+      dateClick: function(arg) {
+        console.log('dateClick', calendar.formatIso(arg.date));
       },
-      select: function(startDate, endDate) {
-        console.log('select', startDate.format(), endDate.format());
+      select: function(arg) {
+        console.log('select', calendar.formatIso(arg.start), calendar.formatIso(arg.end));
       }
     });
 
+    calendar.render();
+
     // load the list of available timezones, build the <select> options
-    $.getJSON('php/get-timezones.php', function(timezones) {
-      $.each(timezones, function(i, timezone) {
-        if (timezone != 'UTC') { // UTC is already in the list
-          $('#timezone-selector').append(
-            $("<option/>").text(timezone).attr('value', timezone)
-          );
+    superagent.get('php/get-timezones.php').end(function(err, res) {
+      var timeZones = res.body || JSON.parse(res.text);
+
+      timeZones.forEach(function(timeZone) {
+        var optionEl;
+
+        if (timeZone != 'UTC') { // UTC is already in the list
+          optionEl = document.createElement('option');
+          optionEl.value = timeZone;
+          optionEl.innerText = timeZone;
+          timeZoneSelectorEl.appendChild(optionEl);
         }
       });
     });
 
     // when the timezone selector changes, dynamically change the calendar option
-    $('#timezone-selector').on('change', function() {
-      $('#calendar').fullCalendar('option', 'timezone', this.value || false);
+    timeZoneSelectorEl.addEventListener('change', function() {
+      calendar.setOption('timeZone', this.value || false);
     });
   });
 
@@ -107,8 +119,7 @@
     <div class='left'>
       Timezone:
       <select id='timezone-selector'>
-        <option value='' selected>none</option>
-        <option value='local'>local</option>
+        <option value='local' selected>local</option>
         <option value='UTC'>UTC</option>
       </select>
     </div>

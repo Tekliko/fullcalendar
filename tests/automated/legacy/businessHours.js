@@ -2,11 +2,18 @@
 
 import { getBoundingRect } from '../lib/dom-geom'
 import { doElsMatchSegs } from '../lib/segs'
-import { getTimeGridTop, getTimeGridDayEls } from '../lib/time-grid'
+import {
+  getTimeGridTop,
+  getTimeGridDayEls,
+  getTimeGridNonBusinessDayEls
+} from '../lib/time-grid'
+import { ensureDate } from '../datelib/utils'
+import { getDayGridNonBusinessDayEls } from '../view-render/DayGridRenderUtils'
 
 
 describe('businessHours', function() {
   pushOptions({
+    timeZone: 'UTC',
     defaultDate: '2014-11-25',
     defaultView: 'month',
     businessHours: true
@@ -19,7 +26,7 @@ describe('businessHours', function() {
     currentCalendar.next() // ... out. should render correctly.
 
     // whole days
-    expect($('.fc-day-grid .fc-nonbusiness').length).toBe(2) // each multi-day stretch is one element
+    expect(getDayGridNonBusinessDayEls().length).toBe(2) // each multi-day stretch is one element
 
     // timed area
     expect(isTimeGridNonBusinessSegsRendered([
@@ -54,14 +61,10 @@ describe('businessHours', function() {
           defaultView: viewName,
           businessHours: false
         })
-        var rootEl = $('.fc-view > *:first')
-        expect(rootEl.length).toBe(1)
 
         expect(queryNonBusinessSegs().length).toBe(0)
-        currentCalendar.option('businessHours', true)
+        currentCalendar.setOption('businessHours', true)
         expect(queryNonBusinessSegs().length).toBeGreaterThan(0)
-
-        expect($('.fc-view > *:first')[0]).toBe(rootEl[0]) // same element. didn't completely rerender
       })
 
       it('allows dynamic turning off', function() {
@@ -69,14 +72,10 @@ describe('businessHours', function() {
           defaultView: viewName,
           businessHours: true
         })
-        var rootEl = $('.fc-view > *:first')
-        expect(rootEl.length).toBe(1)
 
         expect(queryNonBusinessSegs().length).toBeGreaterThan(0)
-        currentCalendar.option('businessHours', false)
+        currentCalendar.setOption('businessHours', false)
         expect(queryNonBusinessSegs().length).toBe(0)
-
-        expect($('.fc-view > *:first')[0]).toBe(rootEl[0]) // same element. didn't completely rerender
       })
     })
   })
@@ -90,14 +89,14 @@ describe('businessHours', function() {
         defaultView: 'agendaWeek',
         businessHours: [
           {
-            dow: [ 1, 2, 3 ], // mon, tue, wed
-            start: '08:00',
-            end: '18:00'
+            daysOfWeek: [ 1, 2, 3 ], // mon, tue, wed
+            startTime: '08:00',
+            endTime: '18:00'
           },
           {
-            dow: [ 4, 5 ], // thu, fri
-            start: '10:00',
-            end: '16:00'
+            daysOfWeek: [ 4, 5 ], // thu, fri
+            startTime: '10:00',
+            endTime: '16:00'
           }
         ]
       })
@@ -133,13 +132,13 @@ describe('businessHours', function() {
         businessHours: [
           {
             // invalid
-            start: '08:00',
-            end: '18:00'
+            startTime: '08:00',
+            endTime: '18:00'
           },
           {
-            dow: [ 4, 5 ], // thu, fri
-            start: '10:00',
-            end: '16:00'
+            daysOfWeek: [ 4, 5 ], // thu, fri
+            startTime: '10:00',
+            endTime: '16:00'
           }
         ]
       })
@@ -189,7 +188,7 @@ describe('businessHours', function() {
   ------------------------------------------------------------------------------------------------------------------ */
 
   function isTimeGridNonBusinessSegsRendered(segs) {
-    return doElsMatchSegs($('.fc-time-grid .fc-nonbusiness'), segs, getTimeGridRect)
+    return doElsMatchSegs(getTimeGridNonBusinessDayEls(), segs, getTimeGridRect)
   }
 
   function getTimeGridRect(start, end) {
@@ -200,17 +199,20 @@ describe('businessHours', function() {
       end = obj.end
     }
 
-    start = $.fullCalendar.moment.parseZone(start)
-    end = $.fullCalendar.moment.parseZone(end)
+    start = ensureDate(start)
+    end = ensureDate(end)
 
-    var startTime = start.time()
-    var endTime
-    if (end.isSame(start, 'day')) {
-      endTime = end.time()
+    var startDay = FullCalendar.startOfDay(start)
+    var endDay = FullCalendar.startOfDay(end)
+    var startTimeMs = start.valueOf() - startDay.valueOf()
+    var endTimeMs = end.valueOf() - endDay.valueOf()
+
+    if (startDay.valueOf() === endDay.valueOf()) {
+      endTimeMs = end.valueOf() - endDay.valueOf()
     } else if (end < start) {
-      endTime = startTime
+      endTimeMs = startTimeMs
     } else {
-      endTime = moment.duration({ hours: 24 })
+      endTimeMs = 1000 * 60 * 60 * 24 // whole day
     }
 
     var dayEls = getTimeGridDayEls(start)
@@ -218,8 +220,8 @@ describe('businessHours', function() {
     return {
       left: dayRect.left,
       right: dayRect.right,
-      top: getTimeGridTop(startTime),
-      bottom: getTimeGridTop(endTime)
+      top: getTimeGridTop(startTimeMs),
+      bottom: getTimeGridTop(endTimeMs)
     }
   }
 

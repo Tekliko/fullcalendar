@@ -1,3 +1,16 @@
+import {
+  getEmptyMessageElsCount,
+  getListHeadingElAltElText,
+  getListHeadingElMainElText,
+  getListHeadingEls,
+  getListEventEls,
+  getListEventElsCount,
+  getListEventElTimeText,
+  getListEventElTitle
+} from '../lib/ListViewUtils'
+import { getScrollerEl } from '../lib/MonthViewUtils'
+import { replaceEventElDotElWithEl } from '../event-render/EventRenderUtils'
+
 describe('ListView rendering', function() {
   pushOptions({
     defaultView: 'listWeek',
@@ -27,8 +40,8 @@ describe('ListView rendering', function() {
         var events = getEventInfo()
 
         expect(days.length).toBe(2)
-        expect(days[0].date.format()).toEqual('2016-08-15')
-        expect(days[1].date.format()).toEqual('2016-08-17')
+        expect(days[0].date).toEqualDate('2016-08-15')
+        expect(days[1].date).toEqualDate('2016-08-17')
 
         expect(events.length).toBe(2)
         expect(events[0].title).toBe('event 1')
@@ -39,8 +52,8 @@ describe('ListView rendering', function() {
 
       it('filters events through eventRender', function() {
         var options = {}
-        options.eventRender = function(event, el) {
-          el.find('.fc-event-dot').replaceWith('<span class="custom-icon" />')
+        options.eventRender = function(arg) {
+          replaceEventElDotElWithEl($(arg.el), '<span class="custom-icon" />')
         }
 
         initCalendar(options)
@@ -143,10 +156,10 @@ describe('ListView rendering', function() {
         var events = getEventInfo()
 
         expect(days.length).toBe(2)
-        expect(days[0].date.format()).toEqual('2016-08-15')
+        expect(days[0].date).toEqualDate('2016-08-15')
         expect(days[0].mainText).toEqual('lundi')
         expect(days[0].altText).toEqual('15 août 2016')
-        expect(days[1].date.format()).toEqual('2016-08-17')
+        expect(days[1].date).toEqualDate('2016-08-17')
         expect(days[1].mainText).toEqual('mercredi')
         expect(days[1].altText).toEqual('17 août 2016')
 
@@ -354,13 +367,13 @@ describe('ListView rendering', function() {
       var events = getEventInfo()
 
       expect(days.length).toBe(7)
-      expect(days[0].date.format()).toEqual('2016-08-28')
-      expect(days[1].date.format()).toEqual('2016-08-29')
-      expect(days[2].date.format()).toEqual('2016-08-30')
-      expect(days[3].date.format()).toEqual('2016-08-31')
-      expect(days[4].date.format()).toEqual('2016-09-01')
-      expect(days[5].date.format()).toEqual('2016-09-02')
-      expect(days[6].date.format()).toEqual('2016-09-03')
+      expect(days[0].date).toEqualDate('2016-08-28')
+      expect(days[1].date).toEqualDate('2016-08-29')
+      expect(days[2].date).toEqualDate('2016-08-30')
+      expect(days[3].date).toEqualDate('2016-08-31')
+      expect(days[4].date).toEqualDate('2016-09-01')
+      expect(days[5].date).toEqualDate('2016-09-02')
+      expect(days[6].date).toEqualDate('2016-09-03')
 
       expect(events.length).toBe(13)
       expect(events[0].title).toBe('Long Event')
@@ -396,7 +409,7 @@ describe('ListView rendering', function() {
       initCalendar({
         header: false
       }, $el)
-      let $scrollEl = $('.fc-view .fc-scroller')
+      let $scrollEl = getScrollerEl()
       expect(
         $scrollEl[0].scrollHeight
       ).toBeGreaterThan(
@@ -411,7 +424,7 @@ describe('ListView rendering', function() {
         header: false,
         height: 'auto'
       }, $el)
-      let $scrollEl = $('.fc-view .fc-scroller')
+      let $scrollEl = getScrollerEl()
       expect(
         Math.abs($scrollEl[0].scrollHeight - $scrollEl[0].clientHeight)
       ).toBeLessThan(2)
@@ -430,35 +443,35 @@ describe('ListView rendering', function() {
     initCalendar(options)
     currentCalendar.changeView('listWeek')
 
-    expect($('.fc-list-item').length).toBe(1)
+    expect(getListEventElsCount()).toBe(1)
 
     currentCalendar.prev()
 
-    expect($('.fc-list-item').length).toBe(0)
+    expect(getListEventElsCount()).toBe(0)
   })
 
   function getDayInfo() {
-    return $('.fc-list-heading').map(function(i, el) {
+    return getListHeadingEls().map(function(i, el) {
       el = $(el)
       return {
-        mainText: el.find('.fc-list-heading-main').text() || '',
-        altText: el.find('.fc-list-heading-alt').text() || '',
-        date: $.fullCalendar.moment(el.data('date'))
+        mainText: getListHeadingElMainElText(el) || '',
+        altText: getListHeadingElAltElText(el) || '',
+        date: new Date(el.data('date'))
       }
     }).get()
   }
 
   function getEventInfo() { // gets all *segments*
-    return $('.fc-list-item').map(function(i, el) {
+    return getListEventEls().map(function(i, el) {
       el = $(el)
       return {
-        title: el.find('.fc-list-item-title').text() || '', // text!
-        timeText: el.find('.fc-list-item-time').text() || '' // text!
+        title: getListEventElTitle(el) || '', // text!
+        timeText: getListEventElTimeText(el) || '' // text!
       }
     }).get()
   }
 
   function getIsEmptyMessage() {
-    return Boolean($('.fc-list-empty').length)
+    return Boolean(getEmptyMessageElsCount())
   }
 })

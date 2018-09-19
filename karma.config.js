@@ -15,16 +15,30 @@ module.exports = function(config) {
     // list of files / patterns to load in the browser
     files: [
 
-      // dependencies for main lib
+      // dependencies for main lib AND plugin
+      'node_modules/superagent/superagent.js',
       'node_modules/moment/moment.js',
+      'node_modules/moment/locale/es.js', // only spanish for testing
+      'node_modules/moment-timezone/builds/moment-timezone-with-data.js',
+      'node_modules/luxon/build/global/luxon.js',
+      'node_modules/rrule/dist/es5/rrule.js',
       'node_modules/jquery/dist/jquery.js',
       'node_modules/components-jqueryui/jquery-ui.js',
       'node_modules/components-jqueryui/themes/cupertino/jquery-ui.css',
 
-      // main lib files
+      // dependencies for tests
+      'node_modules/xhr-mock/dist/xhr-mock.js', // TODO: should include this via require(), but .d.ts problems
+      'node_modules/jasmine-jquery/lib/jasmine-jquery.js',
+      'node_modules/jquery-simulate/jquery.simulate.js',
+
+      // main lib AND plugin files
       'dist/fullcalendar.js',
       'dist/fullcalendar.css',
-      'dist/gcal.js',
+      'dist/fullcalendar-gcal.js',
+      'dist/fullcalendar-luxon.js',
+      'dist/fullcalendar-moment.js',
+      'dist/fullcalendar-moment-timezone.js',
+      'dist/fullcalendar-rrule.js',
       'dist/locale-all.js',
 
       // a way to dump variables into the test environment
@@ -32,13 +46,6 @@ module.exports = function(config) {
 
       // so plugins can dump files into here and test side effects
       'tmp/test-side-effects/*.js',
-
-      // dependencies for tests
-      'node_modules/native-promise-only/lib/npo.src.js',
-      'node_modules/jquery-mockjax/dist/jquery.mockjax.js',
-      'node_modules/jasmine-jquery/lib/jasmine-jquery.js',
-      'node_modules/jasmine-fixture/dist/jasmine-fixture.js',
-      'node_modules/jquery-simulate/jquery.simulate.js',
 
       'tests/automated/base.css',
       'tmp/automated-tests.js',
@@ -75,16 +82,13 @@ module.exports = function(config) {
     // If browser does not capture in given timeout [ms], kill it
     captureTimeout: 60000,
 
-    // force a window size for PhantomJS, because it's usually unreasonably small, resulting in offset problems
     customLaunchers: {
-      PhantomJS_custom: {
-        base: 'PhantomJS',
-        options: {
-          viewportSize: {
-            width: 1024,
-            height: 768
-          }
-        }
+      ChromeHeadless_custom: {
+        base: 'ChromeHeadless',
+        flags: [
+          '--no-sandbox', // needed for TravisCI: https://docs.travis-ci.com/user/chrome#Sandboxing
+          '--window-size=1280,1696' // some tests only work with larger window (w?, h?)
+        ]
       }
     }
   })

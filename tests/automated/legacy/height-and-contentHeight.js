@@ -32,16 +32,10 @@
 
       // relies on asAMethod (boolean)
       // otherOptions: other calendar options to dynamically set (assumes asAMethod)
-      function init(heightVal, otherOptions) {
+      function init(heightVal) {
         if (asAMethod) {
           initCalendar({}, calendarEl)
-
-          if (otherOptions === undefined) {
-            currentCalendar.option(heightProp, heightVal)
-          } else {
-            otherOptions[heightProp] = heightVal // reuse same object. insert height option
-            currentCalendar.option(otherOptions)
-          }
+          currentCalendar.setOption(heightProp, heightVal)
         } else {
           initCalendar({ [heightProp]: heightVal }, calendarEl)
         }
@@ -76,9 +70,13 @@
 
               heightPropDescriptions.forEach(function(testInfo) {
                 describe(testInfo.description, function() {
+
                   if (testInfo.heightWrapper) {
                     beforeEach(function() {
-                      calendarEl.wrap('<div class="calendar-container" style="height: 600px;" />')
+                      calendarEl.wrap('<div id="calendar-container" style="height: 600px;" />')
+                    })
+                    afterEach(function() {
+                      $('#calendar-container').remove()
                     })
                   }
 
@@ -135,19 +133,6 @@
                       expect($('.fc-day-grid-container')).toHaveScrollbars()
                     })
                   })
-
-                  describe('when setting height, contentHeight option with other options', function() {
-                    pushOptions({
-                      [heightProp]: 600 // initialize with another height
-                    })
-                    beforeEach(function() {
-                      init(250, { minTime: '00:00' }) // then change height, providing other opts to set too
-                    })
-
-                    it('height of the view container should change', function() {
-                      expectHeight(250)
-                    })
-                  })
                 })
               })
 
@@ -180,7 +165,10 @@
                   describe(testInfo.description, function() {
                     if (testInfo.heightWrapper) {
                       beforeEach(function() {
-                        calendarEl.wrap('<div class="calendar-container" style="height: 600px;" />')
+                        calendarEl.wrap('<div id="calendar-container" style="height: 600px;" />')
+                      })
+                      afterEach(function() {
+                        $('#calendar-container').remove()
                       })
                     }
 
@@ -234,7 +222,10 @@
                     describe(testInfo.description, function() {
                       if (testInfo.heightWrapper) {
                         beforeEach(function() {
-                          calendarEl.wrap('<div class="calendar-container" style="height: 600px;" />')
+                          calendarEl.wrap('<div id="calendar-container" style="height: 600px;" />')
+                        })
+                        afterEach(function() {
+                          $('#calendar-container').remove()
                         })
                       }
 

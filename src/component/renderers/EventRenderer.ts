@@ -1,23 +1,31 @@
-import * as $ from 'jquery'
-import { compareByFieldSpecs, proxy } from '../../util'
+import View from '../../View'
+import { DateMarker } from '../../datelib/marker'
+import { createFormatter, DateFormatter } from '../../datelib/formatting'
+import { htmlToElements } from '../../util/dom-manip'
+import { compareByFieldSpecs } from '../../util/misc'
+import { EventRenderRange, EventUi, hasBgRendering } from '../event-rendering'
+import { Seg } from '../DateComponent'
+import EventApi from '../../api/EventApi'
+import { assignTo } from '../../util/object'
+
 
 export default class EventRenderer {
 
-  view: any
+  view: View
   component: any
   fillRenderer: any // might remain null
 
-  fgSegs: any
-  bgSegs: any
+  fgSegs: Seg[]
+  bgSegs: Seg[]
 
   // derived from options
-  eventTimeFormat: any
-  displayEventTime: any
-  displayEventEnd: any
+  eventTimeFormat: DateFormatter
+  displayEventTime: boolean
+  displayEventEnd: boolean
 
 
   constructor(component, fillRenderer) { // fillRenderer is optional
-    this.view = component._getView()
+    this.view = component.view
     this.component = component
     this.fillRenderer = fillRenderer
   }
@@ -33,10 +41,11 @@ export default class EventRenderer {
     let displayEventTime
     let displayEventEnd
 
-    this.eventTimeFormat =
+    this.eventTimeFormat = createFormatter(
       this.opt('eventTimeFormat') ||
-      this.opt('timeFormat') || // deprecated
-      this.computeEventTimeFormat()
+      this.computeEventTimeFormat(),
+      this.opt('defaultRangeSeparator')
+    )
 
     displayEventTime = this.opt('displayEventTime')
     if (displayEventTime == null) {
@@ -53,72 +62,38 @@ export default class EventRenderer {
   }
 
 
-  render(eventsPayload) {
-    let dateProfile = this.component._getDateProfile()
-    let eventDefId
-    let instanceGroup
-    let eventRanges
-    let bgRanges = []
-    let fgRanges = []
+  renderSegs(allSegs: Seg[]) {
+    let bgSegs: Seg[] = []
+    let fgSegs: Seg[] = []
 
-    for (eventDefId in eventsPayload) {
-      instanceGroup = eventsPayload[eventDefId]
-
-      eventRanges = instanceGroup.sliceRenderRanges(
-        dateProfile.activeUnzonedRange
-      )
-
-      if (instanceGroup.getEventDef().hasBgRendering()) {
-        bgRanges.push.apply(bgRanges, eventRanges)
+    for (let seg of allSegs) {
+      if (hasBgRendering(seg.eventRange.ui)) {
+        bgSegs.push(seg)
       } else {
-        fgRanges.push.apply(fgRanges, eventRanges)
+        fgSegs.push(seg)
       }
     }
 
-    this.renderBgRanges(bgRanges)
-    this.renderFgRanges(fgRanges)
+    this.bgSegs = this.renderBgSegs(bgSegs)
+
+    // render an `.el` on each seg
+    // returns a subset of the segs. segs that were actually rendered
+    fgSegs = this.renderFgSegEls(fgSegs)
+
+    if (this.renderFgSegs(fgSegs) !== false) { // no failure?
+      this.fgSegs = fgSegs
+    }
+
+    this.view.triggerRenderedSegs(this.getSegs())
   }
 
 
   unrender() {
-    this.unrenderBgRanges()
-    this.unrenderFgRanges()
-  }
-
-
-  renderFgRanges(eventRanges) {
-    let eventFootprints = this.component.eventRangesToEventFootprints(eventRanges)
-    let segs = this.component.eventFootprintsToSegs(eventFootprints)
-
-    // render an `.el` on each seg
-    // returns a subset of the segs. segs that were actually rendered
-    segs = this.renderFgSegEls(segs)
-
-    if (this.renderFgSegs(segs) !== false) { // no failure?
-      this.fgSegs = segs
-    }
-  }
-
-
-  unrenderFgRanges() {
-    this.unrenderFgSegs(this.fgSegs || [])
-    this.fgSegs = null
-  }
-
-
-  renderBgRanges(eventRanges) {
-    let eventFootprints = this.component.eventRangesToEventFootprints(eventRanges)
-    let segs = this.component.eventFootprintsToSegs(eventFootprints)
-
-    if (this.renderBgSegs(segs) !== false) { // no failure?
-      this.bgSegs = segs
-    }
-  }
-
-
-  unrenderBgRanges() {
     this.unrenderBgSegs()
     this.bgSegs = null
+
+    this.unrenderFgSegs(this.fgSegs || [])
+    this.fgSegs = null
   }
 
 
@@ -128,7 +103,7 @@ export default class EventRenderer {
 
 
   // Renders foreground event segments onto the grid
-  renderFgSegs(segs): (boolean | void) {
+  renderFgSegs(segs: Seg[]): (boolean | void) {
     // subclasses must implement
     // segs already has rendered els, and has been filtered.
 
@@ -137,29 +112,36 @@ export default class EventRenderer {
 
 
   // Unrenders all currently rendered foreground segments
-  unrenderFgSegs(segs) {
+  unrenderFgSegs(segs: Seg[]) {
     // subclasses must implement
   }
 
 
-  renderBgSegs(segs) {
+  renderBgSegs(segs: Seg[]): Seg[] {
     if (this.fillRenderer) {
-      this.fillRenderer.renderSegs('bgEvent', segs, {
+      return this.fillRenderer.renderSegs('bgEvent', segs, {
         getClasses: (seg) => {
-          return this.getBgClasses(seg.footprint.eventDef)
+          return seg.eventRange.ui.classNames.concat([ 'fc-bgevent' ])
         },
         getCss: (seg) => {
           return {
-            'background-color': this.getBgColor(seg.footprint.eventDef)
+            'background-color': seg.eventRange.ui.backgroundColor
           }
         },
         filterEl: (seg, el) => {
-          return this.filterEventRenderEl(seg.footprint, el)
+          el = this.filterEventRenderEl(seg, el)
+
+          if (el) {
+            setElSeg(el, seg)
+            seg.el = el
+          }
+
+          return el
         }
       })
-    } else {
-      return false // signal failure if no fillRenderer
     }
+
+    return []
   }
 
 
@@ -172,7 +154,7 @@ export default class EventRenderer {
 
   // Renders and assigns an `el` property for each foreground event segment.
   // Only returns segments that successfully rendered.
-  renderFgSegEls(segs, disableResizing= false) {
+  renderFgSegEls(segs: Seg[], isMirrors?: boolean) {
     let hasEventRenderHandlers = this.view.hasPublicHandlers('eventRender')
     let html = ''
     let renderedSegs = []
@@ -182,22 +164,20 @@ export default class EventRenderer {
 
       // build a large concatenation of event segment HTML
       for (i = 0; i < segs.length; i++) {
-        this.beforeFgSegHtml(segs[i])
-        html += this.fgSegHtml(segs[i], disableResizing)
+        html += this.fgSegHtml(segs[i])
       }
 
       // Grab individual elements from the combined HTML string. Use each as the default rendering.
       // Then, compute the 'el' for each segment. An el might be null if the eventRender callback returned false.
-      $(html).each((i, node) => {
+      htmlToElements(html).forEach((el, i) => {
         let seg = segs[i]
-        let el = $(node)
 
         if (hasEventRenderHandlers) { // optimization
-          el = this.filterEventRenderEl(seg.footprint, el)
+          el = this.filterEventRenderEl(seg, el, isMirrors)
         }
 
         if (el) {
-          el.data('fc-seg', seg) // used by handlers
+          setElSeg(el, seg)
           seg.el = el
           renderedSegs.push(seg)
         }
@@ -208,23 +188,19 @@ export default class EventRenderer {
   }
 
 
-  beforeFgSegHtml(seg) { // hack
-  }
-
-
   // Generates the HTML for the default rendering of a foreground event segment. Used by renderFgSegEls()
-  fgSegHtml(seg, disableResizing) {
+  fgSegHtml(seg: Seg) {
     // subclasses should implement
   }
 
 
   // Generic utility for generating the HTML classNames for an event segment's element
-  getSegClasses(seg, isDraggable, isResizable) {
+  getSegClasses(seg: Seg, isDraggable, isResizable) {
     let classes = [
       'fc-event',
       seg.isStart ? 'fc-start' : 'fc-not-start',
       seg.isEnd ? 'fc-end' : 'fc-not-end'
-    ].concat(this.getClasses(seg.footprint.eventDef))
+    ].concat(seg.eventRange.ui.classNames)
 
     if (isDraggable) {
       classes.push('fc-draggable')
@@ -234,7 +210,7 @@ export default class EventRenderer {
     }
 
     // event is currently selected? attach a className.
-    if (this.view.isEventDefSelected(seg.footprint.eventDef)) {
+    if (seg.eventRange.instance.instanceId === this.component.eventSelection) {
       classes.push('fc-selected')
     }
 
@@ -244,18 +220,28 @@ export default class EventRenderer {
 
   // Given an event and the default element used for rendering, returns the element that should actually be used.
   // Basically runs events and elements through the eventRender hook.
-  filterEventRenderEl(eventFootprint, el) {
-    let legacy = eventFootprint.getEventLegacy()
+  filterEventRenderEl(seg: Seg, el: HTMLElement, isMirror: boolean = false) {
 
-    let custom = this.view.publiclyTrigger('eventRender', {
-      context: legacy,
-      args: [ legacy, el, this.view ]
-    })
+    let custom = this.view.publiclyTrigger('eventRender', [
+      {
+        event: new EventApi(
+          this.view.calendar,
+          seg.eventRange.def,
+          seg.eventRange.instance,
+        ),
+        isMirror,
+        isStart: seg.isStart,
+        isEnd: seg.isEnd,
+        // TODO: include seg.range once all components consistently generate it
+        el,
+        view: this.view
+      }
+    ])
 
     if (custom === false) { // means don't render at all
       el = null
     } else if (custom && custom !== true) {
-      el = $(custom)
+      el = custom
     }
 
     return el
@@ -265,22 +251,36 @@ export default class EventRenderer {
   // Compute the text that should be displayed on an event's element.
   // `range` can be the Event object itself, or something range-like, with at least a `start`.
   // If event times are disabled, or the event has no time, will return a blank string.
-  // If not specified, formatStr will default to the eventTimeFormat setting,
+  // If not specified, formatter will default to the eventTimeFormat setting,
   // and displayEnd will default to the displayEventEnd setting.
-  getTimeText(eventFootprint, formatStr?, displayEnd?) {
+  getTimeText(eventRange: EventRenderRange, formatter?, displayEnd?) {
+    let { def, instance } = eventRange
+
     return this._getTimeText(
-      eventFootprint.eventInstance.dateProfile.start,
-      eventFootprint.eventInstance.dateProfile.end,
-      eventFootprint.componentFootprint.isAllDay,
-      formatStr,
-      displayEnd
+      instance.range.start,
+      def.hasEnd ? instance.range.end : null,
+      def.isAllDay,
+      formatter,
+      displayEnd,
+      instance.forcedStartTzo,
+      instance.forcedEndTzo
     )
   }
 
 
-  _getTimeText(start, end, isAllDay, formatStr?, displayEnd?) {
-    if (formatStr == null) {
-      formatStr = this.eventTimeFormat
+  _getTimeText(
+    start: DateMarker,
+    end: DateMarker,
+    isAllDay,
+    formatter?,
+    displayEnd?,
+    forcedStartTzo?: number,
+    forcedEndTzo?: number
+) {
+    const dateEnv = this.view.calendar.dateEnv
+
+    if (formatter == null) {
+      formatter = this.eventTimeFormat
     }
 
     if (displayEnd == null) {
@@ -289,13 +289,14 @@ export default class EventRenderer {
 
     if (this.displayEventTime && !isAllDay) {
       if (displayEnd && end) {
-        return this.view.formatRange(
-          { start: start, end: end },
-          false, // allDay
-          formatStr
-        )
+        return dateEnv.formatRange(start, end, formatter, {
+          forcedStartTzo,
+          forcedEndTzo
+        })
       } else {
-        return start.format(formatStr)
+        return dateEnv.format(start, formatter, {
+          forcedTzo: forcedStartTzo
+        })
       }
     }
 
@@ -303,8 +304,12 @@ export default class EventRenderer {
   }
 
 
-  computeEventTimeFormat() {
-    return this.opt('smallTimeFormat')
+  computeEventTimeFormat(): any {
+    return {
+      hour: 'numeric',
+      minute: '2-digit',
+      omitZeroTime: true
+    }
   }
 
 
@@ -318,132 +323,66 @@ export default class EventRenderer {
   }
 
 
-  getBgClasses(eventDef) {
-    let classNames = this.getClasses(eventDef)
-    classNames.push('fc-bgevent')
-    return classNames
-  }
-
-
-  getClasses(eventDef) {
-    let objs = this.getStylingObjs(eventDef)
-    let i
-    let classNames = []
-
-    for (i = 0; i < objs.length; i++) {
-      classNames.push.apply( // append
-        classNames,
-        objs[i].eventClassName || objs[i].className || []
-      )
-    }
-
-    return classNames
-  }
-
-
   // Utility for generating event skin-related CSS properties
-  getSkinCss(eventDef) {
+  getSkinCss(ui: EventUi) {
     return {
-      'background-color': this.getBgColor(eventDef),
-      'border-color': this.getBorderColor(eventDef),
-      color: this.getTextColor(eventDef)
+      'background-color': ui.backgroundColor,
+      'border-color': ui.borderColor,
+      color: ui.textColor
     }
   }
 
 
-  // Queries for caller-specified color, then falls back to default
-  getBgColor(eventDef) {
-    let objs = this.getStylingObjs(eventDef)
-    let i
-    let val
+  sortEventSegs(segs, specs = this.view.eventOrderSpecs): Seg[] {
+    let objs = segs.map(buildSegCompareObj)
 
-    for (i = 0; i < objs.length && !val; i++) {
-      val = objs[i].eventBackgroundColor || objs[i].eventColor ||
-        objs[i].backgroundColor || objs[i].color
+    objs.sort(function(obj0, obj1) {
+      return compareByFieldSpecs(obj0, obj1, specs)
+    })
+
+    return objs.map(function(c) {
+      return c._seg
+    })
+  }
+
+
+  computeFgSize() {
+  }
+
+
+  assignFgSize() {
+  }
+
+}
+
+
+function setElSeg(el: HTMLElement, seg: Seg) {
+  (el as any).fcSeg = seg
+}
+
+export function getElSeg(el: HTMLElement): Seg | null {
+  return (el as any).fcSeg || null
+}
+
+
+// returns a object with all primitive props that can be compared
+export function buildSegCompareObj(seg: Seg) {
+  let eventDef = seg.eventRange.def
+  let range = seg.eventRange.instance.range
+  let start = range.start.valueOf()
+  let end = range.end.valueOf()
+
+  return assignTo(
+    {},
+    eventDef.extendedProps,
+    eventDef,
+    {
+      id: eventDef.publicId,
+      start,
+      end,
+      duration: end - start,
+      isAllDay: Number(eventDef.isAllDay),
+      _seg: seg // for later retrieval
     }
-
-    if (!val) {
-      val = this.opt('eventBackgroundColor') || this.opt('eventColor')
-    }
-
-    return val
-  }
-
-
-  // Queries for caller-specified color, then falls back to default
-  getBorderColor(eventDef) {
-    let objs = this.getStylingObjs(eventDef)
-    let i
-    let val
-
-    for (i = 0; i < objs.length && !val; i++) {
-      val = objs[i].eventBorderColor || objs[i].eventColor ||
-        objs[i].borderColor || objs[i].color
-    }
-
-    if (!val) {
-      val = this.opt('eventBorderColor') || this.opt('eventColor')
-    }
-
-    return val
-  }
-
-
-  // Queries for caller-specified color, then falls back to default
-  getTextColor(eventDef) {
-    let objs = this.getStylingObjs(eventDef)
-    let i
-    let val
-
-    for (i = 0; i < objs.length && !val; i++) {
-      val = objs[i].eventTextColor ||
-        objs[i].textColor
-    }
-
-    if (!val) {
-      val = this.opt('eventTextColor')
-    }
-
-    return val
-  }
-
-
-  getStylingObjs(eventDef) {
-    let objs = this.getFallbackStylingObjs(eventDef)
-    objs.unshift(eventDef)
-    return objs
-  }
-
-
-  getFallbackStylingObjs(eventDef) {
-    return [ eventDef.source ]
-  }
-
-
-  sortEventSegs(segs) {
-    segs.sort(proxy(this, 'compareEventSegs'))
-  }
-
-
-  // A cmp function for determining which segments should take visual priority
-  compareEventSegs(seg1, seg2) {
-    let f1 = seg1.footprint
-    let f2 = seg2.footprint
-    let cf1 = f1.componentFootprint
-    let cf2 = f2.componentFootprint
-    let r1 = cf1.unzonedRange
-    let r2 = cf2.unzonedRange
-
-    return r1.startMs - r2.startMs || // earlier events go first
-      (r2.endMs - r2.startMs) - (r1.endMs - r1.startMs) || // tie? longer events go first
-      cf2.isAllDay - cf1.isAllDay || // tie? put all-day events first (booleans cast to 0/1)
-      compareByFieldSpecs(
-        f1.eventDef,
-        f2.eventDef,
-        this.view.eventOrderSpecs,
-        f1.eventDef.miscProps,
-        f2.eventDef.miscProps
-      )
-  }
-
+  )
 }

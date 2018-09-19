@@ -1,39 +1,45 @@
-import * as $ from 'jquery'
-import * as moment from 'moment'
-import { capitaliseFirstLetter, debounce } from './util'
-import { globalDefaults, englishDefaults, rtlDefaults } from './options'
-import Iterator from './common/Iterator'
-import GlobalEmitter from './common/GlobalEmitter'
+import { createElement, removeElement, applyStyle, prependToElement, elementClosest } from './util/dom-manip'
+import { computeHeightAndMargins } from './util/dom-geom'
+import { listenBySelector } from './util/dom-event'
+import { capitaliseFirstLetter, debounce } from './util/misc'
 import { default as EmitterMixin, EmitterInterface } from './common/EmitterMixin'
-import { default as ListenerMixin, ListenerInterface } from './common/ListenerMixin'
 import Toolbar from './Toolbar'
 import OptionsManager from './OptionsManager'
 import ViewSpecManager from './ViewSpecManager'
 import View from './View'
 import Theme from './theme/Theme'
-import Constraints from './Constraints'
-import { getMomentLocaleData } from './locale'
-import momentExt from './moment-ext'
-import UnzonedRange from './models/UnzonedRange'
-import ComponentFootprint from './models/ComponentFootprint'
-import EventDateProfile from './models/event/EventDateProfile'
-import EventManager from './models/EventManager'
-import BusinessHourGenerator from './models/BusinessHourGenerator'
-import EventSourceParser from './models/event-source/EventSourceParser'
-import EventDefParser from './models/event/EventDefParser'
-import SingleEventDef from './models/event/SingleEventDef'
-import EventDefMutation from './models/event/EventDefMutation'
-import EventSource from './models/event-source/EventSource'
 import { getThemeSystemClass } from './theme/ThemeRegistry'
-import { RangeInput, MomentInput, OptionsInput, EventObjectInput, EventSourceInput } from './types/input-types'
+import { OptionsInput } from './types/input-types'
+import { getLocale } from './datelib/locale'
+import { DateEnv, DateInput } from './datelib/env'
+import { DateMarker, startOfDay } from './datelib/marker'
+import { createFormatter } from './datelib/formatting'
+import { Duration, createDuration } from './datelib/duration'
+import reduce from './reducers/main'
+import { parseDateSpan, DateSpanInput, DateSpan, buildDateSpanApi } from './structs/date-span'
+import reselector from './util/reselector'
+import { assignTo } from './util/object'
+import { RenderForceFlags } from './component/Component'
+import { DateRangeInput, rangeContainsMarker } from './datelib/date-range'
+import { DateProfile } from './DateProfileGenerator'
+import { EventSourceInput, parseEventSource, EventSourceHash } from './structs/event-source'
+import { EventInput, EventDefHash, parseEvent } from './structs/event'
+import { CalendarState, Action } from './reducers/types'
+import EventSourceApi from './api/EventSourceApi'
+import EventApi from './api/EventApi'
+import { createEmptyEventStore, EventStore, eventTupleToStore } from './structs/event-store'
+import { computeEventDefUis, EventUiHash } from './component/event-rendering'
+import { BusinessHoursInput, parseBusinessHours } from './structs/business-hours'
+import PointerDragging, { PointerDragEvent } from './dnd/PointerDragging'
+import EventDragging from './interactions/EventDragging'
 
 
 export default class Calendar {
 
-  // not for internal use. use options module directly instead.
-  static defaults: any = globalDefaults
-  static englishDefaults: any = englishDefaults
-  static rtlDefaults: any = rtlDefaults
+  // global handler registry
+  static on: EmitterInterface['on']
+  static off: EmitterInterface['off']
+  static trigger: EmitterInterface['trigger']
 
   on: EmitterInterface['on']
   one: EmitterInterface['one']
@@ -41,58 +47,70 @@ export default class Calendar {
   trigger: EmitterInterface['trigger']
   triggerWith: EmitterInterface['triggerWith']
   hasHandlers: EmitterInterface['hasHandlers']
-  listenTo: ListenerInterface['listenTo']
-  stopListeningTo: ListenerInterface['stopListeningTo']
 
-  view: View // current View object
-  viewsByType: { [viewName: string]: View } // holds all instantiated view instances, current or not
-  currentDate: moment.Moment // unzoned moment. private (public API should use getDate instead)
-  theme: Theme
-  eventManager: EventManager
-  constraints: Constraints
+  buildDateEnv: any
+  buildTheme: any
+  computeEventDefUis: (eventDefs: EventDefHash, eventSources: EventSourceHash, options: any) => EventUiHash
+  parseBusinessHours: (input: BusinessHoursInput) => EventStore
+
   optionsManager: OptionsManager
   viewSpecManager: ViewSpecManager
-  businessHourGenerator: BusinessHourGenerator
-  loadingLevel: number = 0 // number of simultaneous loading tasks
+  theme: Theme
+  dateEnv: DateEnv
+  defaultAllDayEventDuration: Duration
+  defaultTimedEventDuration: Duration
 
-  defaultAllDayEventDuration: moment.Duration
-  defaultTimedEventDuration: moment.Duration
-  localeData: object
+  el: HTMLElement
+  elThemeClassName: string
+  elDirClassName: string
+  contentEl: HTMLElement
 
-  el: JQuery
-  contentEl: JQuery
+  documentPointer: PointerDragging // for unfocusing
+  isRecentPointerDateSelect = false // wish we could use a selector to detect date selection, but uses hit system
+
   suggestedViewHeight: number
   ignoreUpdateViewSize: number = 0
-  freezeContentHeightDepth: number = 0
+  removeNavLinkListener: any
   windowResizeProxy: any
 
+  viewsByType: { [viewName: string]: View } // holds all instantiated view instances, current or not
+  view: View // the latest view, internal state, regardless of whether rendered or not
+  renderedView: View // the view that is currently RENDERED, though it might not be most recent from internal state
   header: Toolbar
   footer: Toolbar
-  toolbarsManager: Iterator
+
+  state: CalendarState
+  actionQueue = []
+  isReducing: boolean = false
+
+  isDisplaying: boolean = false // installed in DOM? accepting renders?
+  isRendering: boolean = false // currently in the _render function?
+  isSkeletonRendered: boolean = false // fyi: set within the debounce delay
+  renderingPauseDepth: number = 0
+  rerenderFlags: RenderForceFlags
+  renderableEventStore: EventStore
+  buildDelayedRerender: any
+  delayedRerender: any
+  afterSizingTriggers: any = {}
 
 
-  constructor(el: JQuery, overrides: OptionsInput) {
-
-    // declare the current calendar instance relies on GlobalEmitter. needed for garbage collection.
-    // unneeded() is called in destroy.
-    GlobalEmitter.needed()
-
+  constructor(el: HTMLElement, overrides: OptionsInput) {
     this.el = el
     this.viewsByType = {}
 
-    this.optionsManager = new OptionsManager(this, overrides)
-    this.viewSpecManager = new ViewSpecManager(this.optionsManager, this)
-    this.initMomentInternals() // needs to happen after options hash initialized
-    this.initCurrentDate()
-    this.initEventManager()
-    this.constraints = new Constraints(this.eventManager, this)
+    this.optionsManager = new OptionsManager(overrides)
+    this.viewSpecManager = new ViewSpecManager(this.optionsManager)
 
-    this.constructed()
-  }
+    this.buildDateEnv = reselector(buildDateEnv)
+    this.buildTheme = reselector(buildTheme)
+    this.buildDelayedRerender = reselector(buildDelayedRerender)
+    this.computeEventDefUis = reselector(computeEventDefUis)
+    this.parseBusinessHours = reselector((input) => {
+      return parseBusinessHours(input, this)
+    })
 
-
-  constructed() {
-    // useful for monkeypatching. used?
+    this.handleOptions(this.optionsManager.computed)
+    this.hydrate()
   }
 
 
@@ -101,32 +119,411 @@ export default class Calendar {
   }
 
 
-  publiclyTrigger(name: string, triggerInfo) {
-    let optHandler = this.opt(name)
-    let context
-    let args
+  // Public API for rendering
+  // -----------------------------------------------------------------------------------------------------------------
 
-    if ($.isPlainObject(triggerInfo)) {
-      context = triggerInfo.context
-      args = triggerInfo.args
-    } else if ($.isArray(triggerInfo)) {
-      args = triggerInfo
-    }
 
-    if (context == null) {
-      context = this.el[0] // fallback context
-    }
-
-    if (!args) {
-      args = []
-    }
-
-    this.triggerWith(name, context, args) // Emitter's method
-
-    if (optHandler) {
-      return optHandler.apply(context, args)
+  render() {
+    if (!this.isDisplaying) {
+      this.isDisplaying = true
+      this.renderableEventStore = createEmptyEventStore()
+      this.bindGlobalHandlers()
+      this.el.classList.add('fc')
+      this._render()
+    } else if (this.elementVisible()) {
+      // mainly for the public API
+      this.calcSize()
+      this.updateViewSize(true) // force=true
     }
   }
+
+
+  destroy() {
+    if (this.isDisplaying) {
+      this.isDisplaying = false
+      this.unbindGlobalHandlers()
+      this._destroy()
+      this.el.classList.remove('fc')
+    }
+  }
+
+
+  // General Rendering
+  // -----------------------------------------------------------------------------------------------------------------
+
+
+  _render() {
+    let { rerenderFlags } = this
+    this.rerenderFlags = null // clear for future requestRerender calls, which might happen during render
+
+    this.isRendering = true
+
+    this.applyElClassNames()
+
+    if (!this.isSkeletonRendered) {
+      this.renderSkeleton()
+      this.isSkeletonRendered = true
+    }
+
+    this.freezeContentHeight() // do after contentEl is created in renderSkeleton
+
+    this.renderView(rerenderFlags)
+
+    if (this.view) { // toolbar rendering heavily depends on view
+      this.renderToolbars(rerenderFlags)
+    }
+
+    if (this.updateViewSize()) { // success?
+      this.renderedView.popScroll()
+    }
+
+    this.thawContentHeight()
+    this.releaseAfterSizingTriggers()
+
+    this.isRendering = false
+    this.trigger('_rendered') // for tests
+
+    // another render requested during this most recent rendering?
+    if (this.rerenderFlags) {
+      this.delayedRerender()
+    }
+  }
+
+
+  _destroy() {
+    this.view = null
+
+    if (this.renderedView) {
+      this.renderedView.removeElement()
+      this.renderedView = null
+    }
+
+    if (this.header) {
+      this.header.removeElement()
+      this.header = null
+    }
+
+    if (this.footer) {
+      this.footer.removeElement()
+      this.footer = null
+    }
+
+    this.unrenderSkeleton()
+    this.isSkeletonRendered = false
+
+    this.removeElClassNames()
+  }
+
+
+  smash() { // rebuild view and rerender everything
+    this.batchRendering(() => {
+      let oldView = this.view
+
+      // reinstantiate/rerender the entire view
+      if (oldView) {
+        this.viewsByType = {} // so that getViewByType will generate fresh views
+        this.view = this.getViewByType(oldView.type) // will be rendered in renderView
+
+        // recompute dateProfile
+        this.setCurrentDateMarker(this.state.dateProfile.currentDate)
+
+        // transfer scroll from old view
+        let scroll = oldView.queryScroll()
+        scroll.isLocked = true // will prevent view from computing own values
+        this.view.addScroll(scroll)
+      }
+
+      this.requestRerender(true) // force=true
+    })
+  }
+
+
+  // Classnames on root elements
+  // -----------------------------------------------------------------------------------------------------------------
+
+
+  applyElClassNames() {
+    let classList = this.el.classList
+    let elDirClassName = this.opt('isRtl') ? 'fc-rtl' : 'fc-ltr'
+    let elThemeClassName = this.theme.getClass('widget')
+
+    if (elDirClassName !== this.elDirClassName) {
+      if (this.elDirClassName) {
+        classList.remove(this.elDirClassName)
+      }
+      classList.add(elDirClassName)
+      this.elDirClassName = elDirClassName
+    }
+
+    if (elThemeClassName !== this.elThemeClassName) {
+      if (this.elThemeClassName) {
+        classList.remove(this.elThemeClassName)
+      }
+      classList.add(elThemeClassName)
+      this.elThemeClassName = elThemeClassName
+    }
+  }
+
+
+  removeElClassNames() {
+    let classList = this.el.classList
+
+    if (this.elDirClassName) {
+      classList.remove(this.elDirClassName)
+      this.elDirClassName = null
+    }
+
+    if (this.elThemeClassName) {
+      classList.remove(this.elThemeClassName)
+      this.elThemeClassName = null
+    }
+  }
+
+
+  // Skeleton Rendering
+  // -----------------------------------------------------------------------------------------------------------------
+
+
+  renderSkeleton() {
+
+    prependToElement(
+      this.el,
+      this.contentEl = createElement('div', { className: 'fc-view-container' })
+    )
+
+    // event delegation for nav links
+    this.removeNavLinkListener = listenBySelector(this.el, 'click', 'a[data-goto]', (ev, anchorEl) => {
+      let gotoOptions: any = anchorEl.getAttribute('data-goto')
+      gotoOptions = gotoOptions ? JSON.parse(gotoOptions) : {}
+
+      let date = this.dateEnv.createMarker(gotoOptions.date)
+      let viewType = gotoOptions.type
+
+      // property like "navLinkDayClick". might be a string or a function
+      let customAction = this.renderedView.opt('navLink' + capitaliseFirstLetter(viewType) + 'Click')
+
+      if (typeof customAction === 'function') {
+        customAction(date, ev)
+      } else {
+        if (typeof customAction === 'string') {
+          viewType = customAction
+        }
+        this.zoomTo(date, viewType)
+      }
+    })
+  }
+
+  unrenderSkeleton() {
+    removeElement(this.contentEl)
+    this.removeNavLinkListener()
+  }
+
+
+  // Global Handlers
+  // -----------------------------------------------------------------------------------------------------------------
+
+
+  bindGlobalHandlers() {
+    let documentPointer = this.documentPointer = new PointerDragging(document)
+    documentPointer.shouldIgnoreMove = true
+    documentPointer.shouldWatchScroll = false
+    documentPointer.emitter.on('pointerup', this.onDocumentPointerUp)
+
+    if (this.opt('handleWindowResize')) {
+      window.addEventListener('resize',
+        this.windowResizeProxy = debounce( // prevents rapid calls
+          this.windowResize.bind(this),
+          this.opt('windowResizeDelay')
+        )
+      )
+    }
+  }
+
+  unbindGlobalHandlers() {
+    this.documentPointer.destroy()
+
+    if (this.windowResizeProxy) {
+      window.removeEventListener('resize', this.windowResizeProxy)
+      this.windowResizeProxy = null
+    }
+  }
+
+
+  // Dispatcher
+  // -----------------------------------------------------------------------------------------------------------------
+
+
+  hydrate() {
+    this.state = this.buildInitialState()
+
+    let rawSources = this.opt('eventSources') || []
+    let singleRawSource = this.opt('events')
+    let sources = [] // parsed
+
+    if (singleRawSource) {
+      rawSources.unshift(singleRawSource)
+    }
+
+    for (let rawSource of rawSources) {
+      let source = parseEventSource(rawSource, this)
+      if (source) {
+        sources.push(source)
+      }
+    }
+
+    this.dispatch({ type: 'ADD_EVENT_SOURCES', sources })
+    this.setViewType(this.opt('defaultView'), this.getInitialDate())
+  }
+
+
+  buildInitialState(): CalendarState {
+    return {
+      loadingLevel: 0,
+      eventSourceLoadingLevel: 0,
+      dateProfile: null,
+      eventSources: {},
+      eventStore: createEmptyEventStore(),
+      eventUis: {},
+      businessHours: createEmptyEventStore(), // gets populated when we delegate rendering to View
+      dateSelection: null,
+      eventSelection: '',
+      eventDrag: null,
+      eventResize: null
+    }
+  }
+
+
+  dispatch(action: Action) {
+    this.actionQueue.push(action)
+
+    if (!this.isReducing) {
+      this.isReducing = true
+      let oldState = this.state
+
+      while (this.actionQueue.length) {
+        this.state = this.reduce(
+          this.state,
+          this.actionQueue.shift(),
+          this
+        )
+      }
+
+      let newState = this.state
+      this.isReducing = false
+
+      if (!oldState.loadingLevel && newState.loadingLevel) {
+        this.publiclyTrigger('loading', [ true, this.view ])
+      } else if (oldState.loadingLevel && !newState.loadingLevel) {
+        this.publiclyTrigger('loading', [ false, this.view ])
+      }
+
+      this.requestRerender()
+    }
+  }
+
+
+  reduce(state: CalendarState, action: Action, calendar: Calendar): CalendarState {
+    return reduce(state, action, calendar)
+  }
+
+
+  // Render Queue
+  // -----------------------------------------------------------------------------------------------------------------
+
+
+  /*
+  the force flags force certain entities to be rerendered.
+  it does not avoid the delay if one is configured.
+  */
+  requestRerender(forceFlags: RenderForceFlags = {}) {
+    if (forceFlags === true || !this.rerenderFlags) {
+      this.rerenderFlags = forceFlags // true, or the first object
+    } else {
+      assignTo(this.rerenderFlags, forceFlags) // merge the objects
+    }
+
+    this.delayedRerender() // will call a debounced-version of tryRerender
+  }
+
+
+  tryRerender() {
+    if (
+      this.isDisplaying && // must be accepting renders
+      this.rerenderFlags && // indicates that a rerender was requested
+      !this.renderingPauseDepth && // not paused
+      !this.isRendering // not currently in the render loop
+    ) {
+      this._render()
+    }
+  }
+
+
+  batchRendering(func) {
+    this.renderingPauseDepth++
+    func()
+    this.renderingPauseDepth--
+    this.requestRerender()
+  }
+
+
+  // Options
+  // -----------------------------------------------------------------------------------------------------------------
+
+
+  setOption(name: string, value: any) {
+    let oldDateEnv = this.dateEnv
+
+    this.optionsManager.add(name, value)
+    this.handleOptions(this.optionsManager.computed)
+
+    if (name === 'height' || name === 'contentHeight' || name === 'aspectRatio') {
+      this.updateViewSize(true) // isResize=true
+    } else if (name === 'timeZone') {
+      this.dispatch({
+        type: 'CHANGE_TIMEZONE',
+        oldDateEnv
+      })
+    } else if (name === 'defaultDate') {
+      // can't change date this way. use gotoDate instead
+    } else if (/^(event|select)(Overlap|Constraint|Allow)$/.test(name)) {
+      // doesn't affect rendering. only interactions.
+    } else {
+      this.smash()
+    }
+  }
+
+
+  getOption(name: string) { // getter, used externally
+    return this.optionsManager.computed[name]
+  }
+
+
+  opt(name: string) { // getter, used internally
+    return this.optionsManager.computed[name]
+  }
+
+
+  handleOptions(options) {
+    this.defaultAllDayEventDuration = createDuration(options.defaultAllDayEventDuration)
+    this.defaultTimedEventDuration = createDuration(options.defaultTimedEventDuration)
+    this.delayedRerender = this.buildDelayedRerender(options.rerenderDelay)
+    this.theme = this.buildTheme(options)
+    this.dateEnv = this.buildDateEnv(
+      options.locale,
+      options.timeZone,
+      options.timeZoneImpl,
+      options.firstDay,
+      options.weekNumberCalculation,
+      options.weekLabel,
+      options.cmdFormatter
+    )
+
+    this.viewSpecManager.clearCache()
+  }
+
+
+  // Trigger
+  // -----------------------------------------------------------------------------------------------------------------
 
 
   hasPublicHandlers(name: string): boolean {
@@ -135,36 +532,97 @@ export default class Calendar {
   }
 
 
-  // Options Public API
-  // -----------------------------------------------------------------------------------------------------------------
+  publiclyTrigger(name: string, args?) {
+    let optHandler = this.opt(name)
 
+    this.triggerWith(name, this, args)
 
-  // public getter/setter
-  option(name: string | object, value?) {
-    let newOptionHash
-
-    if (typeof name === 'string') {
-      if (value === undefined) { // getter
-        return this.optionsManager.get(name)
-      } else { // setter for individual option
-        newOptionHash = {}
-        newOptionHash[name] = value
-        this.optionsManager.add(newOptionHash)
-      }
-    } else if (typeof name === 'object') { // compound setter with object input
-      this.optionsManager.add(name)
+    if (optHandler) {
+      return optHandler.apply(this, args)
     }
   }
 
 
-  // private getter
-  opt(name: string) {
-    return this.optionsManager.get(name)
+  publiclyTriggerAfterSizing(name, args) {
+    let { afterSizingTriggers } = this;
+
+    (afterSizingTriggers[name] || (afterSizingTriggers[name] = [])).push(args)
+  }
+
+
+  releaseAfterSizingTriggers() {
+    let { afterSizingTriggers } = this
+
+    for (let name in afterSizingTriggers) {
+      for (let args of afterSizingTriggers[name]) {
+        this.publiclyTrigger(name, args)
+      }
+    }
+
+    this.afterSizingTriggers = {}
   }
 
 
   // View
   // -----------------------------------------------------------------------------------------------------------------
+
+
+  renderView(forceFlags: RenderForceFlags) {
+    let { state, renderedView } = this
+
+    if (renderedView !== this.view) {
+      if (renderedView) {
+        renderedView.removeElement()
+      }
+      renderedView = this.renderedView = this.view
+    }
+
+    if (!renderedView.el) {
+      renderedView.setElement(
+        createElement('div', { className: 'fc-view fc-' + renderedView.type + '-view' })
+      )
+    } else {
+      // because removeElement must have been called previously, which unbinds global handlers
+      renderedView.bindGlobalHandlers()
+    }
+
+    if (!renderedView.el.parentNode) {
+      this.contentEl.appendChild(renderedView.el)
+    } else {
+      renderedView.addScroll(renderedView.queryScroll())
+    }
+
+    // if event sources are still loading and progressive rendering hasn't been enabled,
+    // keep rendering the last fully loaded set of events
+    let renderableEventStore = this.renderableEventStore =
+      (state.eventSourceLoadingLevel && !this.opt('progressiveEventRendering')) ?
+        this.renderableEventStore :
+        state.eventStore
+
+    // setting state here, eek
+    let eventUis = this.state.eventUis = this.computeEventDefUis(
+      renderableEventStore.defs,
+      state.eventSources,
+      renderedView.options
+    )
+
+    renderedView.render({
+      dateProfile: state.dateProfile,
+      eventStore: renderableEventStore,
+      eventUis: eventUis,
+      businessHours: this.parseBusinessHours(renderedView.opt('businessHours')),
+      dateSelection: state.dateSelection,
+      eventSelection: state.eventSelection,
+      eventDrag: state.eventDrag,
+      eventResize: state.eventResize
+    }, forceFlags)
+  }
+
+
+  getViewByType(viewType: string) {
+    return this.viewsByType[viewType] ||
+      (this.viewsByType[viewType] = this.instantiateView(viewType))
+  }
 
 
   // Given a view name for a custom view or a standard view, creates a ready-to-go View object
@@ -185,33 +643,48 @@ export default class Calendar {
   }
 
 
-  changeView(viewName: string, dateOrRange: RangeInput | MomentInput) {
+  changeView(viewType: string, dateOrRange: DateRangeInput | DateInput) {
+    let dateMarker = null
 
     if (dateOrRange) {
-      if ((dateOrRange as RangeInput).start && (dateOrRange as RangeInput).end) { // a range
-        this.optionsManager.recordOverrides({ // will not rerender
-          visibleRange: dateOrRange
-        })
+      if ((dateOrRange as DateRangeInput).start && (dateOrRange as DateRangeInput).end) { // a range
+        this.optionsManager.add('visibleRange', dateOrRange) // will not rerender
       } else { // a date
-        this.currentDate = this.moment(dateOrRange).stripZone() // just like gotoDate
+        dateMarker = this.dateEnv.createMarker(dateOrRange as DateInput) // just like gotoDate
       }
     }
 
-    this.renderView(viewName)
+    this.setViewType(viewType, dateMarker)
   }
 
 
   // Forces navigation to a view for the given date.
   // `viewType` can be a specific view name or a generic one like "week" or "day".
-  zoomTo(newDate: moment.Moment, viewType?: string) {
+  // needs to change
+  zoomTo(dateMarker: DateMarker, viewType?: string) {
     let spec
 
     viewType = viewType || 'day' // day is default zoom
     spec = this.viewSpecManager.getViewSpec(viewType) ||
-      this.viewSpecManager.getUnitViewSpec(viewType)
+      this.viewSpecManager.getUnitViewSpec(viewType, this)
 
-    this.currentDate = newDate.clone()
-    this.renderView(spec ? spec.type : null)
+    if (spec) {
+      this.setViewType(spec.type, dateMarker)
+    } else {
+      this.setCurrentDateMarker(dateMarker)
+    }
+  }
+
+
+  // internal use only
+  // does not cause a render
+  setViewType(viewType: string, dateMarker?: DateMarker) {
+    if (!this.view || this.view.type !== viewType) {
+      this.view = this.getViewByType(viewType)
+
+      // luckily, will always cause a rerender
+      this.setCurrentDateMarker(dateMarker || this.state.dateProfile.currentDate)
+    }
   }
 
 
@@ -219,334 +692,123 @@ export default class Calendar {
   // -----------------------------------------------------------------------------------------------------------------
 
 
-  initCurrentDate() {
+  getInitialDate() {
     let defaultDateInput = this.opt('defaultDate')
 
     // compute the initial ambig-timezone date
     if (defaultDateInput != null) {
-      this.currentDate = this.moment(defaultDateInput).stripZone()
+      return this.dateEnv.createMarker(defaultDateInput)
     } else {
-      this.currentDate = this.getNow() // getNow already returns unzoned
+      return this.getNow() // getNow already returns unzoned
     }
   }
 
 
   prev() {
-    let view = this.view
-    let prevInfo = view.dateProfileGenerator.buildPrev(view.get('dateProfile'))
-
-    if (prevInfo.isValid) {
-      this.currentDate = prevInfo.date
-      this.renderView()
-    }
+    this.setDateProfile(
+      this.view.dateProfileGenerator.buildPrev(this.state.dateProfile)
+    )
   }
 
 
   next() {
-    let view = this.view
-    let nextInfo = view.dateProfileGenerator.buildNext(view.get('dateProfile'))
-
-    if (nextInfo.isValid) {
-      this.currentDate = nextInfo.date
-      this.renderView()
-    }
+    this.setDateProfile(
+      this.view.dateProfileGenerator.buildNext(this.state.dateProfile)
+    )
   }
 
 
   prevYear() {
-    this.currentDate.add(-1, 'years')
-    this.renderView()
+    this.setCurrentDateMarker(
+      this.dateEnv.addYears(this.state.dateProfile.currentDate, -1)
+    )
   }
 
 
   nextYear() {
-    this.currentDate.add(1, 'years')
-    this.renderView()
+    this.setCurrentDateMarker(
+      this.dateEnv.addYears(this.state.dateProfile.currentDate, 1)
+    )
   }
 
 
   today() {
-    this.currentDate = this.getNow() // should deny like prev/next?
-    this.renderView()
+    this.setCurrentDateMarker(this.getNow())
   }
 
 
   gotoDate(zonedDateInput) {
-    this.currentDate = this.moment(zonedDateInput).stripZone()
-    this.renderView()
+    this.setCurrentDateMarker(
+      this.dateEnv.createMarker(zonedDateInput)
+    )
   }
 
 
-  incrementDate(delta) {
-    this.currentDate.add(moment.duration(delta))
-    this.renderView()
+  incrementDate(deltaInput) { // is public facing
+    let delta = createDuration(deltaInput)
+
+    if (delta) { // else, warn about invalid input?
+      this.setCurrentDateMarker(
+        this.dateEnv.add(this.state.dateProfile.currentDate, delta)
+      )
+    }
   }
 
 
   // for external API
-  getDate(): moment.Moment {
-    return this.applyTimezone(this.currentDate) // infuse the calendar's timezone
+  getDate(): Date {
+    return this.dateEnv.toDate(this.state.dateProfile.currentDate)
   }
 
 
-  // Loading Triggering
+  setCurrentDateMarker(date: DateMarker) { // internal use only
+    this.setDateProfile(
+      this.view.computeDateProfile(date)
+    )
+  }
+
+
+  setDateProfile(dateProfile: DateProfile) {
+    this.unselect()
+    this.dispatch({
+      type: 'SET_DATE_PROFILE',
+      dateProfile: dateProfile
+    })
+  }
+
+
+  // Date Formatting Utils
   // -----------------------------------------------------------------------------------------------------------------
 
 
-  // Should be called when any type of async data fetching begins
-  pushLoading() {
-    if (!(this.loadingLevel++)) {
-      this.publiclyTrigger('loading', [ true, this.view ])
-    }
+  formatDate(d: Date, formatter): string {
+    const { dateEnv } = this
+    return dateEnv.format(
+      dateEnv.createMarker(d),
+      createFormatter(formatter)
+    )
   }
 
 
-  // Should be called when any type of async data fetching completes
-  popLoading() {
-    if (!(--this.loadingLevel)) {
-      this.publiclyTrigger('loading', [ false, this.view ])
-    }
+  formatRange(d0: Date, d1: Date, formatter, isEndExclusive?: boolean) {
+    const { dateEnv } = this
+    return dateEnv.formatRange(
+      dateEnv.createMarker(d0),
+      dateEnv.createMarker(d1),
+      createFormatter(formatter, this.opt('defaultRangeSeparator')),
+      { isEndExclusive }
+    )
   }
 
 
-  // High-level Rendering
-  // -----------------------------------------------------------------------------------
-
-
-  render() {
-    if (!this.contentEl) {
-      this.initialRender()
-    } else if (this.elementVisible()) {
-      // mainly for the public API
-      this.calcSize()
-      this.updateViewSize()
-    }
-  }
-
-
-  initialRender() {
-    let el = this.el
-
-    el.addClass('fc')
-
-    // event delegation for nav links
-    el.on('click.fc', 'a[data-goto]', (ev) => {
-      let anchorEl = $(ev.currentTarget)
-      let gotoOptions = anchorEl.data('goto') // will automatically parse JSON
-      let date = this.moment(gotoOptions.date)
-      let viewType = gotoOptions.type
-
-      // property like "navLinkDayClick". might be a string or a function
-      let customAction = this.view.opt('navLink' + capitaliseFirstLetter(viewType) + 'Click')
-
-      if (typeof customAction === 'function') {
-        customAction(date, ev)
-      } else {
-        if (typeof customAction === 'string') {
-          viewType = customAction
-        }
-        this.zoomTo(date, viewType)
-      }
-    })
-
-    // called immediately, and upon option change
-    this.optionsManager.watch('settingTheme', [ '?theme', '?themeSystem' ], (opts) => {
-      let themeClass = getThemeSystemClass(opts.themeSystem || opts.theme)
-      let theme = new themeClass(this.optionsManager)
-      let widgetClass = theme.getClass('widget')
-
-      this.theme = theme
-
-      if (widgetClass) {
-        el.addClass(widgetClass)
-      }
-    }, () => {
-      let widgetClass = this.theme.getClass('widget')
-
-      this.theme = null
-
-      if (widgetClass) {
-        el.removeClass(widgetClass)
-      }
-    })
-
-    this.optionsManager.watch('settingBusinessHourGenerator', [ '?businessHours' ], (deps) => {
-      this.businessHourGenerator = new BusinessHourGenerator(deps.businessHours, this)
-
-      if (this.view) {
-        this.view.set('businessHourGenerator', this.businessHourGenerator)
-      }
-    }, () => {
-      this.businessHourGenerator = null
-    })
-
-    // called immediately, and upon option change.
-    // HACK: locale often affects isRTL, so we explicitly listen to that too.
-    this.optionsManager.watch('applyingDirClasses', [ '?isRTL', '?locale' ], (opts) => {
-      el.toggleClass('fc-ltr', !opts.isRTL)
-      el.toggleClass('fc-rtl', opts.isRTL)
-    })
-
-    this.contentEl = $("<div class='fc-view-container'/>").prependTo(el)
-
-    this.initToolbars()
-    this.renderHeader()
-    this.renderFooter()
-    this.renderView(this.opt('defaultView'))
-
-    if (this.opt('handleWindowResize')) {
-      $(window).resize(
-        this.windowResizeProxy = debounce( // prevents rapid calls
-          this.windowResize.bind(this),
-          this.opt('windowResizeDelay')
-        )
-      )
-    }
-  }
-
-
-  destroy() {
-    if (this.view) {
-      this.clearView()
-    }
-
-    this.toolbarsManager.proxyCall('removeElement')
-    this.contentEl.remove()
-    this.el.removeClass('fc fc-ltr fc-rtl')
-
-    // removes theme-related root className
-    this.optionsManager.unwatch('settingTheme')
-    this.optionsManager.unwatch('settingBusinessHourGenerator')
-
-    this.el.off('.fc') // unbind nav link handlers
-
-    if (this.windowResizeProxy) {
-      $(window).unbind('resize', this.windowResizeProxy)
-      this.windowResizeProxy = null
-    }
-
-    GlobalEmitter.unneeded()
-  }
-
-
-  elementVisible(): boolean {
-    return this.el.is(':visible')
-  }
-
-
-  // Render Queue
-  // -----------------------------------------------------------------------------------------------------------------
-
-
-  bindViewHandlers(view) {
-
-    view.watch('titleForCalendar', [ 'title' ], (deps) => { // TODO: better system
-      if (view === this.view) { // hack
-        this.setToolbarsTitle(deps.title)
-      }
-    })
-
-    view.watch('dateProfileForCalendar', [ 'dateProfile' ], (deps) => {
-      if (view === this.view) { // hack
-        this.currentDate = deps.dateProfile.date // might have been constrained by view dates
-        this.updateToolbarButtons(deps.dateProfile)
-      }
-    })
-  }
-
-
-  unbindViewHandlers(view) {
-    view.unwatch('titleForCalendar')
-    view.unwatch('dateProfileForCalendar')
-  }
-
-
-  // View Rendering
-  // -----------------------------------------------------------------------------------
-
-
-  // Renders a view because of a date change, view-type change, or for the first time.
-  // If not given a viewType, keep the current view but render different dates.
-  // Accepts an optional scroll state to restore to.
-  renderView(viewType?: string) {
-    let oldView = this.view
-    let newView
-
-    this.freezeContentHeight()
-
-    if (oldView && viewType && oldView.type !== viewType) {
-      this.clearView()
-    }
-
-    // if viewType changed, or the view was never created, create a fresh view
-    if (!this.view && viewType) {
-      newView = this.view =
-        this.viewsByType[viewType] ||
-        (this.viewsByType[viewType] = this.instantiateView(viewType))
-
-      this.bindViewHandlers(newView)
-
-      newView.startBatchRender() // so that setElement+setDate rendering are joined
-      newView.setElement(
-        $("<div class='fc-view fc-" + viewType + "-view' />").appendTo(this.contentEl)
-      )
-
-      this.toolbarsManager.proxyCall('activateButton', viewType)
-    }
-
-    if (this.view) {
-
-      // prevent unnecessary change firing
-      if (this.view.get('businessHourGenerator') !== this.businessHourGenerator) {
-        this.view.set('businessHourGenerator', this.businessHourGenerator)
-      }
-
-      this.view.setDate(this.currentDate)
-
-      if (newView) {
-        newView.stopBatchRender()
-      }
-    }
-
-    this.thawContentHeight()
-  }
-
-
-  // Unrenders the current view and reflects this change in the Header.
-  // Unregsiters the `view`, but does not remove from viewByType hash.
-  clearView() {
-    let currentView = this.view
-
-    this.toolbarsManager.proxyCall('deactivateButton', currentView.type)
-
-    this.unbindViewHandlers(currentView)
-
-    currentView.removeElement()
-    currentView.unsetDate() // so bindViewHandlers doesn't fire with old values next time
-
-    this.view = null
-  }
-
-
-  // Destroys the view, including the view object. Then, re-instantiates it and renders it.
-  // Maintains the same scroll state.
-  // TODO: maintain any other user-manipulated state.
-  reinitView() {
-    let oldView = this.view
-    let scroll = oldView.queryScroll() // wouldn't be so complicated if Calendar owned the scroll
-    this.freezeContentHeight()
-
-    this.clearView()
-    this.calcSize()
-    this.renderView(oldView.type) // needs the type to freshly render
-
-    this.view.applyScroll(scroll)
-    this.thawContentHeight()
+  formatIso(d: Date, omitTime?: boolean) {
+    const { dateEnv } = this
+    return dateEnv.formatIso(dateEnv.createMarker(d), { omitTime })
   }
 
 
   // Resizing
-  // -----------------------------------------------------------------------------------
+  // -----------------------------------------------------------------------------------------------------------------
 
 
   getSuggestedViewHeight(): number {
@@ -563,19 +825,19 @@ export default class Calendar {
 
 
   updateViewSize(isResize: boolean = false) {
-    let view = this.view
+    let { renderedView } = this
     let scroll
 
-    if (!this.ignoreUpdateViewSize && view) {
+    if (!this.ignoreUpdateViewSize && renderedView) {
 
       if (isResize) {
         this.calcSize()
-        scroll = view.queryScroll()
+        scroll = renderedView.queryScroll()
       }
 
       this.ignoreUpdateViewSize++
 
-      view.updateSize(
+      renderedView.updateSize(
         this.getSuggestedViewHeight(),
         this.isHeightAuto(),
         isResize
@@ -584,7 +846,7 @@ export default class Calendar {
       this.ignoreUpdateViewSize--
 
       if (isResize) {
-        view.applyScroll(scroll)
+        renderedView.applyScroll(scroll)
       }
 
       return true // signal success
@@ -612,65 +874,55 @@ export default class Calendar {
     } else if (typeof heightInput === 'function') { // exists and is a function
       this.suggestedViewHeight = heightInput() - this.queryToolbarsHeight()
     } else if (heightInput === 'parent') { // set to height of parent element
-      this.suggestedViewHeight = this.el.parent().height() - this.queryToolbarsHeight()
+      this.suggestedViewHeight = (this.el.parentNode as HTMLElement).offsetHeight - this.queryToolbarsHeight()
     } else {
       this.suggestedViewHeight = Math.round(
-        this.contentEl.width() /
+        this.contentEl.offsetWidth /
         Math.max(this.opt('aspectRatio'), .5)
       )
     }
   }
 
 
-  windowResize(ev: JQueryEventObject) {
+  elementVisible(): boolean {
+    return Boolean(this.el.offsetWidth)
+  }
+
+
+  windowResize(ev: Event) {
     if (
       // the purpose: so we don't process jqui "resize" events that have bubbled up
       // cast to any because .target, which is Element, can't be compared to window for some reason.
       (ev as any).target === window &&
-      this.view &&
-      this.view.isDatesRendered
+      this.renderedView &&
+      this.renderedView.renderedFlags.dates
     ) {
-      if (this.updateViewSize(true)) { // isResize=true, returns true on success
-        this.publiclyTrigger('windowResize', [ this.view ])
+      if (this.updateViewSize(true)) { // force=true, returns true on success
+        this.publiclyTrigger('windowResize', [ this.renderedView ])
       }
     }
   }
 
 
-  /* Height "Freezing"
-  -----------------------------------------------------------------------------*/
+  // Height "Freezing"
+  // -----------------------------------------------------------------------------------------------------------------
 
 
   freezeContentHeight() {
-    if (!(this.freezeContentHeightDepth++)) {
-      this.forceFreezeContentHeight()
-    }
-  }
-
-
-  forceFreezeContentHeight() {
-    this.contentEl.css({
+    applyStyle(this.contentEl, {
       width: '100%',
-      height: this.contentEl.height(),
+      height: this.contentEl.offsetHeight,
       overflow: 'hidden'
     })
   }
 
 
   thawContentHeight() {
-    this.freezeContentHeightDepth--
-
-    // always bring back to natural height
-    this.contentEl.css({
+    applyStyle(this.contentEl, {
       width: '',
       height: '',
       overflow: ''
     })
-
-    // but if there are future thaws, re-freeze
-    if (this.freezeContentHeightDepth) {
-      this.forceFreezeContentHeight()
-    }
   }
 
 
@@ -678,134 +930,187 @@ export default class Calendar {
   // -----------------------------------------------------------------------------------------------------------------
 
 
-  initToolbars() {
-    this.header = new Toolbar(this, this.computeHeaderOptions())
-    this.footer = new Toolbar(this, this.computeFooterOptions())
-    this.toolbarsManager = new Iterator([ this.header, this.footer ])
-  }
-
-
-  computeHeaderOptions() {
-    return {
-      extraClasses: 'fc-header-toolbar',
-      layout: this.opt('header')
-    }
-  }
-
-
-  computeFooterOptions() {
-    return {
-      extraClasses: 'fc-footer-toolbar',
-      layout: this.opt('footer')
-    }
-  }
-
-
-  // can be called repeatedly and Header will rerender
-  renderHeader() {
-    let header = this.header
-
-    header.setToolbarOptions(this.computeHeaderOptions())
-    header.render()
-
-    if (header.el) {
-      this.el.prepend(header.el)
-    }
-  }
-
-
-  // can be called repeatedly and Footer will rerender
-  renderFooter() {
-    let footer = this.footer
-
-    footer.setToolbarOptions(this.computeFooterOptions())
-    footer.render()
-
-    if (footer.el) {
-      this.el.append(footer.el)
-    }
-  }
-
-
-  setToolbarsTitle(title: string) {
-    this.toolbarsManager.proxyCall('updateTitle', title)
-  }
-
-
-  updateToolbarButtons(dateProfile) {
+  renderToolbars(forceFlags: RenderForceFlags) {
+    let headerLayout = this.opt('header')
+    let footerLayout = this.opt('footer')
     let now = this.getNow()
-    let view = this.view
+    let dateProfile = this.state.dateProfile
+    let view = this.view // use the view that intends to be rendered
     let todayInfo = view.dateProfileGenerator.build(now)
-    let prevInfo = view.dateProfileGenerator.buildPrev(view.get('dateProfile'))
-    let nextInfo = view.dateProfileGenerator.buildNext(view.get('dateProfile'))
+    let prevInfo = view.dateProfileGenerator.buildPrev(dateProfile)
+    let nextInfo = view.dateProfileGenerator.buildNext(dateProfile)
+    let props = {
+      title: view.title,
+      activeButton: view.type,
+      isTodayEnabled: todayInfo.isValid && !rangeContainsMarker(dateProfile.currentRange, now),
+      isPrevEnabled: prevInfo.isValid,
+      isNextEnabled: nextInfo.isValid
+    }
 
-    this.toolbarsManager.proxyCall(
-      (todayInfo.isValid && !dateProfile.currentUnzonedRange.containsDate(now)) ?
-        'enableButton' :
-        'disableButton',
-      'today'
-    )
+    if ((!headerLayout || forceFlags === true) && this.header) {
+      this.header.removeElement()
+      this.header = null
+    }
 
-    this.toolbarsManager.proxyCall(
-      prevInfo.isValid ?
-        'enableButton' :
-        'disableButton',
-      'prev'
-    )
+    if (headerLayout) {
+      if (!this.header) {
+        this.header = new Toolbar(this, 'fc-header-toolbar')
+        prependToElement(this.el, this.header.el)
+      }
+      this.header.render(
+        assignTo({ layout: headerLayout }, props),
+        forceFlags
+      )
+    }
 
-    this.toolbarsManager.proxyCall(
-      nextInfo.isValid ?
-        'enableButton' :
-        'disableButton',
-      'next'
-    )
+    if ((!footerLayout || forceFlags === true) && this.footer) {
+      this.footer.removeElement()
+      this.footer = null
+    }
+
+    if (footerLayout) {
+      if (!this.footer) {
+        this.footer = new Toolbar(this, 'fc-footer-toolbar')
+        prependToElement(this.el, this.footer.el)
+      }
+      this.footer.render(
+        assignTo({ layout: footerLayout }, props),
+        forceFlags
+      )
+    }
   }
 
 
   queryToolbarsHeight() {
-    return this.toolbarsManager.items.reduce(function(accumulator, toolbar) {
-      let toolbarHeight = toolbar.el ? toolbar.el.outerHeight(true) : 0 // includes margin
-      return accumulator + toolbarHeight
-    }, 0)
+    let height = 0
+
+    if (this.header) {
+      height += computeHeightAndMargins(this.header.el)
+    }
+
+    if (this.footer) {
+      height += computeHeightAndMargins(this.footer.el)
+    }
+
+    return height
   }
 
 
-  // Selection
+  // Date Selection / Event Selection / DayClick
   // -----------------------------------------------------------------------------------------------------------------
 
 
   // this public method receives start/end dates in any format, with any timezone
-  select(zonedStartInput: MomentInput, zonedEndInput?: MomentInput) {
-    this.view.select(
-      this.buildSelectFootprint.apply(this, arguments)
-    )
-  }
+  // NOTE: args were changed from v3
+  select(dateOrObj: DateInput | any, endDate?: DateInput) {
+    let selectionInput: DateSpanInput
 
-
-  unselect() { // safe to be called before renderView
-    if (this.view) {
-      this.view.unselect()
-    }
-  }
-
-
-  // Given arguments to the select method in the API, returns a span (unzoned start/end and other info)
-  buildSelectFootprint(zonedStartInput: MomentInput, zonedEndInput?: MomentInput): ComponentFootprint {
-    let start = this.moment(zonedStartInput).stripZone()
-    let end
-
-    if (zonedEndInput) {
-      end = this.moment(zonedEndInput).stripZone()
-    } else if (start.hasTime()) {
-      end = start.clone().add(this.defaultTimedEventDuration)
+    if (endDate == null) {
+      if (dateOrObj.start != null) {
+        selectionInput = dateOrObj as DateSpanInput
+      } else {
+        selectionInput = {
+          start: dateOrObj,
+          end: null
+        }
+      }
     } else {
-      end = start.clone().add(this.defaultAllDayEventDuration)
+      selectionInput = {
+        start: dateOrObj,
+        end: endDate
+      } as DateSpanInput
     }
 
-    return new ComponentFootprint(
-      new UnzonedRange(start, end),
-      !start.hasTime()
+    let selection = parseDateSpan(
+      selectionInput,
+      this.dateEnv,
+      createDuration({ days: 1 }) // TODO: cache this?
     )
+
+    if (selection) { // throw parse error otherwise?
+      this.dispatch({ type: 'SELECT_DATES', selection })
+      this.triggerDateSelect(selection)
+    }
+  }
+
+
+  // public method
+  unselect(pev?: PointerDragEvent) {
+    if (this.state.dateSelection) {
+      this.dispatch({ type: 'UNSELECT_DATES' })
+      this.triggerDateUnselect(pev)
+    }
+  }
+
+
+  triggerDateSelect(selection: DateSpan, pev?: PointerDragEvent) {
+    let arg = buildDateSpanApi(selection, this.dateEnv)
+
+    arg.jsEvent = pev ? pev.origEvent : null
+    arg.view = this.view
+
+    this.publiclyTrigger('select', [ arg ])
+
+    if (pev) {
+      this.isRecentPointerDateSelect = true
+    }
+  }
+
+
+  triggerDateUnselect(pev?: PointerDragEvent) {
+    this.publiclyTrigger('unselect', [
+      {
+        jsEvent: pev ? pev.origEvent : null,
+        view: this.view
+      }
+    ])
+  }
+
+
+  // TODO: receive pev?
+  triggerDayClick(dateSpan: DateSpan, dayEl: HTMLElement, view: View, ev: UIEvent) {
+    this.publiclyTrigger('dateClick', [
+      {
+        date: this.dateEnv.toDate(dateSpan.range.start),
+        dateStr: this.dateEnv.formatIso(dateSpan.range.start, { omitTime: dateSpan.isAllDay }),
+        isAllDay: dateSpan.isAllDay,
+        dayEl,
+        jsEvent: ev,
+        view
+      }
+    ])
+  }
+
+
+  // for unfocusing selections
+  onDocumentPointerUp = (pev: PointerDragEvent) => {
+    let { state, view, documentPointer } = this
+
+    // touch-scrolling should never unfocus any type of selection
+    if (!documentPointer.wasTouchScroll) {
+
+      if (
+        state.dateSelection && // an existing date selection?
+        !this.isRecentPointerDateSelect // a new pointer-initiated date selection since last onDocumentPointerUp?
+      ) {
+        let unselectAuto = view.opt('unselectAuto')
+        let unselectCancel = view.opt('unselectCancel')
+
+        if (unselectAuto && (!unselectAuto || !elementClosest(documentPointer.downEl, unselectCancel))) {
+          this.unselect(pev)
+        }
+      }
+
+      if (
+        state.eventSelection && // an existing event selected?
+        !elementClosest(documentPointer.downEl, EventDragging.SELECTOR) // interaction DIDN'T start on an event
+      ) {
+        this.dispatch({ type: 'UNSELECT_EVENT' })
+      }
+
+    }
+
+    this.isRecentPointerDateSelect = false
   }
 
 
@@ -813,227 +1118,19 @@ export default class Calendar {
   // -----------------------------------------------------------------------------------------------------------------
 
 
-  initMomentInternals() {
-
-    this.defaultAllDayEventDuration = moment.duration(this.opt('defaultAllDayEventDuration'))
-    this.defaultTimedEventDuration = moment.duration(this.opt('defaultTimedEventDuration'))
-
-    // Called immediately, and when any of the options change.
-    // Happens before any internal objects rebuild or rerender, because this is very core.
-    this.optionsManager.watch('buildingMomentLocale', [
-      '?locale', '?monthNames', '?monthNamesShort', '?dayNames', '?dayNamesShort',
-      '?firstDay', '?weekNumberCalculation'
-    ], (opts) => {
-      let weekNumberCalculation = opts.weekNumberCalculation
-      let firstDay = opts.firstDay
-      let _week
-
-      // normalize
-      if (weekNumberCalculation === 'iso') {
-        weekNumberCalculation = 'ISO' // normalize
-      }
-
-      let localeData = Object.create( // make a cheap copy
-        getMomentLocaleData(opts.locale) // will fall back to en
-      )
-
-      if (opts.monthNames) {
-        localeData._months = opts.monthNames
-      }
-      if (opts.monthNamesShort) {
-        localeData._monthsShort = opts.monthNamesShort
-      }
-      if (opts.dayNames) {
-        localeData._weekdays = opts.dayNames
-      }
-      if (opts.dayNamesShort) {
-        localeData._weekdaysShort = opts.dayNamesShort
-      }
-
-      if (firstDay == null && weekNumberCalculation === 'ISO') {
-        firstDay = 1
-      }
-      if (firstDay != null) {
-        _week = Object.create(localeData._week) // _week: { dow: # }
-        _week.dow = firstDay
-        localeData._week = _week
-      }
-
-      if ( // whitelist certain kinds of input
-        weekNumberCalculation === 'ISO' ||
-        weekNumberCalculation === 'local' ||
-        typeof weekNumberCalculation === 'function'
-      ) {
-        localeData._fullCalendar_weekCalc = weekNumberCalculation // moment-ext will know what to do with it
-      }
-
-      this.localeData = localeData
-
-      // If the internal current date object already exists, move to new locale.
-      // We do NOT need to do this technique for event dates, because this happens when converting to "segments".
-      if (this.currentDate) {
-        this.localizeMoment(this.currentDate) // sets to localeData
-      }
-    })
-  }
-
-
-  // Builds a moment using the settings of the current calendar: timezone and locale.
-  // Accepts anything the vanilla moment() constructor accepts.
-  moment(...args): moment.Moment {
-    let mom
-
-    if (this.opt('timezone') === 'local') {
-      mom = momentExt.apply(null, args)
-
-      // Force the moment to be local, because momentExt doesn't guarantee it.
-      if (mom.hasTime()) { // don't give ambiguously-timed moments a local zone
-        mom.local()
-      }
-    } else if (this.opt('timezone') === 'UTC') {
-      mom = momentExt.utc.apply(null, args) // process as UTC
-    } else {
-      mom = momentExt.parseZone.apply(null, args) // let the input decide the zone
-    }
-
-    this.localizeMoment(mom) // TODO
-
-    return mom
-  }
-
-
-  msToMoment(ms: number, forceAllDay: boolean): moment.Moment {
-    let mom = momentExt.utc(ms) // TODO: optimize by using Date.UTC
-
-    if (forceAllDay) {
-      mom.stripTime()
-    } else {
-      mom = this.applyTimezone(mom) // may or may not apply locale
-    }
-
-    this.localizeMoment(mom)
-
-    return mom
-  }
-
-
-  msToUtcMoment(ms: number, forceAllDay: boolean): moment.Moment {
-    let mom = momentExt.utc(ms) // TODO: optimize by using Date.UTC
-
-    if (forceAllDay) {
-      mom.stripTime()
-    }
-
-    this.localizeMoment(mom)
-
-    return mom
-  }
-
-
-  // Updates the given moment's locale settings to the current calendar locale settings.
-  localizeMoment(mom) {
-    mom._locale = this.localeData
-  }
-
-
-  // Returns a boolean about whether or not the calendar knows how to calculate
-  // the timezone offset of arbitrary dates in the current timezone.
-  getIsAmbigTimezone(): boolean {
-    return this.opt('timezone') !== 'local' && this.opt('timezone') !== 'UTC'
-  }
-
-
-  // Returns a copy of the given date in the current timezone. Has no effect on dates without times.
-  applyTimezone(date: moment.Moment): moment.Moment {
-    if (!date.hasTime()) {
-      return date.clone()
-    }
-
-    let zonedDate = this.moment(date.toArray())
-    let timeAdjust = date.time().asMilliseconds() - zonedDate.time().asMilliseconds()
-    let adjustedZonedDate
-
-    // Safari sometimes has problems with this coersion when near DST. Adjust if necessary. (bug #2396)
-    if (timeAdjust) { // is the time result different than expected?
-      adjustedZonedDate = zonedDate.clone().add(timeAdjust) // add milliseconds
-      if (date.time().asMilliseconds() - adjustedZonedDate.time().asMilliseconds() === 0) { // does it match perfectly now?
-        zonedDate = adjustedZonedDate
-      }
-    }
-
-    return zonedDate
-  }
-
-
-  /*
-  Assumes the footprint is non-open-ended.
-  */
-  footprintToDateProfile(componentFootprint, ignoreEnd = false) {
-    let start = momentExt.utc(componentFootprint.unzonedRange.startMs)
-    let end
-
-    if (!ignoreEnd) {
-      end = momentExt.utc(componentFootprint.unzonedRange.endMs)
-    }
-
-    if (componentFootprint.isAllDay) {
-      start.stripTime()
-
-      if (end) {
-        end.stripTime()
-      }
-    } else {
-      start = this.applyTimezone(start)
-
-      if (end) {
-        end = this.applyTimezone(end)
-      }
-    }
-
-    return new EventDateProfile(start, end, this)
-  }
-
-
-  // Returns a moment for the current date, as defined by the client's computer or from the `now` option.
-  // Will return an moment with an ambiguous timezone.
-  getNow(): moment.Moment {
+  // Returns a DateMarker for the current date, as defined by the client's computer or from the `now` option
+  getNow(): DateMarker {
     let now = this.opt('now')
+
     if (typeof now === 'function') {
       now = now()
     }
-    return this.moment(now).stripZone()
-  }
 
-
-  // Produces a human-readable string for the given duration.
-  // Side-effect: changes the locale of the given duration.
-  humanizeDuration(duration: moment.Duration): string {
-    return duration.locale(this.opt('locale')).humanize()
-  }
-
-
-  // will return `null` if invalid range
-  parseUnzonedRange(rangeInput: RangeInput): UnzonedRange {
-    let start = null
-    let end = null
-
-    if (rangeInput.start) {
-      start = this.moment(rangeInput.start).stripZone()
+    if (now == null) {
+      return this.dateEnv.createNowMarker()
     }
 
-    if (rangeInput.end) {
-      end = this.moment(rangeInput.end).stripZone()
-    }
-
-    if (!start && !end) {
-      return null
-    }
-
-    if (start && end && end.isBefore(start)) {
-      return null
-    }
-
-    return new UnzonedRange(start, end)
+    return this.dateEnv.createMarker(now)
   }
 
 
@@ -1041,68 +1138,16 @@ export default class Calendar {
   // -----------------------------------------------------------------------------------------------------------------
 
 
-  initEventManager() {
-    let eventManager = new EventManager(this)
-    let rawSources = this.opt('eventSources') || []
-    let singleRawSource = this.opt('events')
-
-    this.eventManager = eventManager
-
-    if (singleRawSource) {
-      rawSources.unshift(singleRawSource)
-    }
-
-    eventManager.on('release', (eventsPayload) => {
-      this.trigger('eventsReset', eventsPayload)
-    })
-
-    eventManager.freeze()
-
-    rawSources.forEach((rawSource) => {
-      let source = EventSourceParser.parse(rawSource, this)
-
-      if (source) {
-        eventManager.addSource(source)
-      }
-    })
-
-    eventManager.thaw()
-  }
-
-
-  requestEvents(start: moment.Moment, end: moment.Moment) {
-    return this.eventManager.requestEvents(
-      start,
-      end,
-      this.opt('timezone'),
-      !this.opt('lazyFetching')
-    )
-  }
-
-
-  // Get an event's normalized end date. If not present, calculate it from the defaults.
-  getEventEnd(event): moment.Moment {
-    if (event.end) {
-      return event.end.clone()
-    } else {
-      return this.getDefaultEventEnd(event.allDay, event.start)
-    }
-  }
-
-
   // Given an event's allDay status and start date, return what its fallback end date should be.
   // TODO: rename to computeDefaultEventEnd
-  getDefaultEventEnd(allDay: boolean, zonedStart: moment.Moment) {
-    let end = zonedStart.clone()
+  getDefaultEventEnd(allDay: boolean, marker: DateMarker): DateMarker {
+    let end = marker
 
     if (allDay) {
-      end.stripTime().add(this.defaultAllDayEventDuration)
+      end = startOfDay(end)
+      end = this.dateEnv.add(end, this.defaultAllDayEventDuration)
     } else {
-      end.add(this.defaultTimedEventDuration)
-    }
-
-    if (this.getIsAmbigTimezone()) {
-      end.stripZone() // we don't know what the tzo should be
+      end = this.dateEnv.add(end, this.defaultTimedEventDuration)
     }
 
     return end
@@ -1113,211 +1158,208 @@ export default class Calendar {
   // -----------------------------------------------------------------------------------------------------------------
 
 
-  rerenderEvents() { // API method. destroys old events if previously rendered.
-    this.view.flash('displayingEvents')
-  }
+  addEvent(eventInput: EventInput, sourceInput?: any): EventApi | null {
 
+    if (eventInput instanceof EventApi) {
 
-  refetchEvents() {
-    this.eventManager.refetchAllSources()
-  }
+      // not already present? don't want to add an old snapshot
+      if (!this.state.eventStore.defs[eventInput.def.defId]) {
+        this.dispatch({
+          type: 'ADD_EVENTS',
+          eventStore: eventTupleToStore(eventInput)
+        })
+      }
 
-
-  renderEvents(eventInputs: EventObjectInput[], isSticky?: boolean) {
-    this.eventManager.freeze()
-
-    for (let i = 0; i < eventInputs.length; i++) {
-      this.renderEvent(eventInputs[i], isSticky)
+      return eventInput
     }
 
-    this.eventManager.thaw()
-  }
-
-
-  renderEvent(eventInput: EventObjectInput, isSticky: boolean = false) {
-    let eventManager = this.eventManager
-    let eventDef = EventDefParser.parse(
-      eventInput,
-      eventInput.source || eventManager.stickySource
-    )
-
-    if (eventDef) {
-      eventManager.addEventDef(eventDef, isSticky)
-    }
-  }
-
-
-  // legacyQuery operates on legacy event instance objects
-  removeEvents(legacyQuery) {
-    let eventManager = this.eventManager
-    let legacyInstances = []
-    let idMap = {}
-    let eventDef
-    let i
-
-    if (legacyQuery == null) { // shortcut for removing all
-      eventManager.removeAllEventDefs() // persist=true
+    let sourceId
+    if (sourceInput && sourceInput.sourceId !== undefined) { // can accept a source object
+      sourceId = sourceInput.sourceId
+    } else if (typeof sourceInput === 'string') { // can accept a sourceId string
+      sourceId = sourceInput
     } else {
-      eventManager.getEventInstances().forEach(function(eventInstance) {
-        legacyInstances.push(eventInstance.toLegacy())
+      sourceId = ''
+    }
+
+    let tuple = parseEvent(eventInput, sourceId, this)
+
+    if (tuple) {
+
+      this.dispatch({
+        type: 'ADD_EVENTS',
+        eventStore: eventTupleToStore(tuple)
       })
 
-      legacyInstances = filterLegacyEventInstances(legacyInstances, legacyQuery)
-
-      // compute unique IDs
-      for (i = 0; i < legacyInstances.length; i++) {
-        eventDef = this.eventManager.getEventDefByUid(legacyInstances[i]._id)
-        idMap[eventDef.id] = true
-      }
-
-      eventManager.freeze()
-
-      for (i in idMap) { // reuse `i` as an "id"
-        eventManager.removeEventDefsById(i) // persist=true
-      }
-
-      eventManager.thaw()
-    }
-  }
-
-
-  // legacyQuery operates on legacy event instance objects
-  clientEvents(legacyQuery) {
-    let legacyEventInstances = []
-
-    this.eventManager.getEventInstances().forEach(function(eventInstance) {
-      legacyEventInstances.push(eventInstance.toLegacy())
-    })
-
-    return filterLegacyEventInstances(legacyEventInstances, legacyQuery)
-  }
-
-
-  updateEvents(eventPropsArray: EventObjectInput[]) {
-    this.eventManager.freeze()
-
-    for (let i = 0; i < eventPropsArray.length; i++) {
-      this.updateEvent(eventPropsArray[i])
-    }
-
-    this.eventManager.thaw()
-  }
-
-
-  updateEvent(eventProps: EventObjectInput) {
-    let eventDef = this.eventManager.getEventDefByUid(eventProps._id)
-    let eventInstance
-    let eventDefMutation
-
-    if (eventDef instanceof SingleEventDef) {
-      eventInstance = eventDef.buildInstance()
-
-      eventDefMutation = EventDefMutation.createFromRawProps(
-        eventInstance,
-        eventProps, // raw props
-        null // largeUnit -- who uses it?
+      return new EventApi(
+        this,
+        tuple.def,
+        tuple.def.recurringDef ? null : tuple.instance
       )
-
-      this.eventManager.mutateEventsWithId(eventDef.id, eventDefMutation) // will release
     }
+
+    return null
+  }
+
+
+  // TODO: optimize
+  getEventById(id: string): EventApi | null {
+    let { defs, instances } = this.state.eventStore
+
+    id = String(id)
+
+    for (let defId in defs) {
+      let def = defs[defId]
+
+      if (def.publicId === id) {
+
+        if (def.recurringDef) {
+          return new EventApi(this, def, null)
+        } else {
+
+          for (let instanceId in instances) {
+            let instance = instances[instanceId]
+
+            if (instance.defId === def.defId) {
+              return new EventApi(this, def, instance)
+            }
+          }
+        }
+      }
+    }
+
+    return null
+  }
+
+
+  getEvents(): EventApi[] {
+    let { defs, instances } = this.state.eventStore
+    let eventApis: EventApi[] = []
+
+    for (let id in instances) {
+      let instance = instances[id]
+      let def = defs[instance.defId]
+
+      eventApis.push(new EventApi(this, def, instance))
+    }
+
+    return eventApis
+  }
+
+
+  removeAllEvents() {
+    this.dispatch({ type: 'REMOVE_ALL_EVENTS' })
+  }
+
+
+  rerenderEvents() { // API method. destroys old events if previously rendered.
+    this.requestRerender({ events: true }) // TODO: test this
   }
 
 
   // Public Event Sources API
-  // ------------------------------------------------------------------------------------
+  // -----------------------------------------------------------------------------------------------------------------
 
 
-  getEventSources(): EventSource {
-    return this.eventManager.otherSources.slice() // clone
-  }
+  getEventSources(): EventSourceApi[] {
+    let sourceHash = this.state.eventSources
+    let sourceApis: EventSourceApi[] = []
 
-
-  getEventSourceById(id): EventSource {
-    return this.eventManager.getSourceById(
-      EventSource.normalizeId(id)
-    )
-  }
-
-
-  addEventSource(sourceInput: EventSourceInput) {
-    let source = EventSourceParser.parse(sourceInput, this)
-
-    if (source) {
-      this.eventManager.addSource(source)
+    for (let internalId in sourceHash) {
+      sourceApis.push(new EventSourceApi(this, sourceHash[internalId]))
     }
+
+    return sourceApis
   }
 
 
-  removeEventSources(sourceMultiQuery) {
-    let eventManager = this.eventManager
-    let sources
-    let i
+  getEventSourceById(id: string): EventSourceApi | null {
+    let sourceHash = this.state.eventSources
 
-    if (sourceMultiQuery == null) {
-      this.eventManager.removeAllSources()
-    } else {
-      sources = eventManager.multiQuerySources(sourceMultiQuery)
+    id = String(id)
 
-      eventManager.freeze()
+    for (let sourceId in sourceHash) {
+      if (sourceHash[sourceId].publicId === id) {
+        return new EventSourceApi(this, sourceHash[sourceId])
+      }
+    }
 
-      for (i = 0; i < sources.length; i++) {
-        eventManager.removeSource(sources[i])
+    return null
+  }
+
+
+  addEventSource(sourceInput: EventSourceInput): EventSourceApi {
+
+    if (sourceInput instanceof EventSourceApi) {
+
+      // not already present? don't want to add an old snapshot
+      if (!this.state.eventSources[sourceInput.internalEventSource.sourceId]) {
+        this.dispatch({
+          type: 'ADD_EVENT_SOURCES',
+          sources: [ sourceInput.internalEventSource ]
+        })
       }
 
-      eventManager.thaw()
+      return sourceInput
     }
+
+    let eventSource = parseEventSource(sourceInput, this)
+
+    if (eventSource) { // TODO: error otherwise?
+      this.dispatch({ type: 'ADD_EVENT_SOURCES', sources: [ eventSource ] })
+
+      return new EventSourceApi(this, eventSource)
+    }
+
+    return null
   }
 
 
-  removeEventSource(sourceQuery) {
-    let eventManager = this.eventManager
-    let sources = eventManager.querySources(sourceQuery)
-    let i
-
-    eventManager.freeze()
-
-    for (i = 0; i < sources.length; i++) {
-      eventManager.removeSource(sources[i])
-    }
-
-    eventManager.thaw()
+  removeAllEventSources() {
+    this.dispatch({ type: 'REMOVE_ALL_EVENT_SOURCES' })
   }
 
 
-  refetchEventSources(sourceMultiQuery) {
-    let eventManager = this.eventManager
-    let sources = eventManager.multiQuerySources(sourceMultiQuery)
-    let i
-
-    eventManager.freeze()
-
-    for (i = 0; i < sources.length; i++) {
-      eventManager.refetchSource(sources[i])
-    }
-
-    eventManager.thaw()
+  refetchEvents() {
+    this.dispatch({ type: 'FETCH_EVENT_SOURCES' })
   }
 
 
 }
 
 EmitterMixin.mixInto(Calendar)
-ListenerMixin.mixInto(Calendar)
 
 
-function filterLegacyEventInstances(legacyEventInstances, legacyQuery) {
-  if (legacyQuery == null) {
-    return legacyEventInstances
-  } else if ($.isFunction(legacyQuery)) {
-    return legacyEventInstances.filter(legacyQuery)
-  } else { // an event ID
-    legacyQuery += '' // normalize to string
+// for reselectors
+// -----------------------------------------------------------------------------------------------------------------
 
-    return legacyEventInstances.filter(function(legacyEventInstance) {
-      // soft comparison because id not be normalized to string
-      // tslint:disable-next-line
-      return legacyEventInstance.id == legacyQuery ||
-        legacyEventInstance._id === legacyQuery // can specify internal id, but must exactly match
-    })
+
+function buildDateEnv(locale, timeZone, timeZoneImpl, firstDay, weekNumberCalculation, weekLabel, cmdFormatter) {
+  return new DateEnv({
+    calendarSystem: 'gregory', // TODO: make this a setting
+    timeZone,
+    timeZoneImpl,
+    locale: getLocale(locale),
+    weekNumberCalculation,
+    firstDay,
+    weekLabel,
+    cmdFormatter
+  })
+}
+
+
+function buildTheme(calendarOptions) {
+  let themeClass = getThemeSystemClass(calendarOptions.themeSystem || calendarOptions.theme)
+  return new themeClass(calendarOptions)
+}
+
+
+function buildDelayedRerender(this: Calendar, wait) {
+  let func = this.tryRerender.bind(this)
+
+  if (wait != null) {
+    func = debounce(func, wait)
   }
+
+  return func
 }

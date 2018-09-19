@@ -48,7 +48,7 @@ describe('scroll state', function() {
       setTimeout(function() { // wait until after browser's scroll state is applied
         scrollEl.scrollTop(9999) // all the way
         scroll0 = scrollEl.scrollTop()
-        $(window).trigger('resize')
+        $(window).simulate('resize')
       }, 0)
     })
 
@@ -63,7 +63,7 @@ describe('scroll state', function() {
         events: [ {
           start: '2015-02-20'
         } ],
-        eventAfterAllRender: function() {
+        _eventsPositioned: function() {
           if (++calls === 1) {
             eventEl0 = $('.fc-event', calendarEl)
             expect(eventEl0.length).toBe(1)
